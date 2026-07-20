@@ -1,0 +1,7 @@
+# Sarala builds for aarch64 musl. Static linking keeps the initramfs a single
+# binary with no loader and no libc to ship alongside it.
+[build]
+target = "aarch64-unknown-linux-musl"
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]

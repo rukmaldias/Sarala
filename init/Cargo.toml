@@ -1,0 +1,15 @@
+[package]
+name = "sarala-init"
+description = "Sarala PID 1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "init"
+path = "src/main.rs"
+
+[dependencies]
+# Raw syscall bindings only. PID 1 deliberately carries no dependency it
+# could not audit in an afternoon — see docs/threat-model.md.
+libc = { version = "0.2", default-features = false }

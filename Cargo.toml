@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = ["init"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+# PID 1 is resident for the life of the system and lives in the initramfs,
+# where every byte is decompressed on every boot. Optimise for size.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+# A panic in PID 1 is unrecoverable regardless — the kernel panics with
+# "Attempted to kill init" either way. Abort rather than pay for unwinding.
+panic = "abort"

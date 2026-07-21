@@ -80,12 +80,38 @@ Primary PMIC is **PM8994** (the standard MSM8996 pairing).
 The `pm8994_*` regulator nodes already exist in the mainline `pm8994.dtsi`, so
 wiring the panel is a matter of referencing them, not defining them.
 
-## Storage & serial (still to extract)
+## Storage — UFS
 
-UFS and the USB-gadget serial console — stage 1's first two sub-milestones —
-are not yet pulled from the downstream tree. UFS on MSM8996 is well mainlined;
-the serial console is expected over USB gadget (`console` on the DWC3 gadget)
-rather than a physical UART. Extract these next, before writing the panel node.
+| Node | Address | Downstream compatible |
+|---|---|---|
+| Host controller | `ufshc@624000` | `qcom,ufshc` |
+| PHY | `ufsphy@627000` | `qcom,ufs-phy-qmp-14nm` |
+
+Fixed SoC addresses, defined in the SoC dtsi, not the board file. **UFS on
+MSM8996 is well mainlined** (`qcom,msm8996-ufshc`), so this is enable-and-wire-
+supplies rather than new driver work — the second-easiest sub-milestone after
+serial.
+
+## Serial console — two paths
+
+**1. Physical debug UART (easiest first signal).** `blsp1_uart2` @ `0x7570000`;
+the base `msm8996-mtp.dtsi` already wires the console here (`&blsp1_uart2`).
+This is the fastest route to the first "kernel log over serial" signal, but
+marlin exposes it only via test points / a debug cable, not a normal port.
+
+**2. USB-gadget serial (the roadmap's exit target).** Primary DWC3 controller
+`dwc3@6a00000` (`snps,dwc3`, SuperSpeed) — the USB-C OTG port — run in
+peripheral mode with a USB CDC-ACM gadget console. This is the path to the
+stage 1 exit criterion, *"a shell over USB gadget serial"*, with no special
+cable. The secondary `dwc3@7600000` is high-speed only and not the console.
+
+## Include-path gotcha
+
+`arch/arm64/boot/dts/htc/` includes `../qcom/*.dtsi`, but
+`arch/arm64/boot/dts/qcom` is a **symlink** to `arch/arm/boot/dts/qcom/` — the
+real MSM8996 SoC dtsi (UFS, UART, DWC3, clocks) lives under **`arch/arm/`**,
+not `arch/arm64/`. A sparse checkout must include `arch/arm/boot/dts/qcom` or
+every `../qcom/` include dangles.
 
 ## Bring-up order (from the roadmap)
 

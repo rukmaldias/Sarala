@@ -52,6 +52,7 @@ The kernel's driver ecosystem is the one component no individual can rewrite. Ev
 | [`docs/architecture.md`](docs/architecture.md) | Layer-by-layer design and the borrow/write boundary |
 | [`docs/roadmap.md`](docs/roadmap.md) | Staged milestones with explicit exit criteria |
 | [`docs/build-environment.md`](docs/build-environment.md) | Reproducible development setup |
+| [`docs/stage0-notes.md`](docs/stage0-notes.md) | Stage 0 build log: the working recipe and its sharp edges |
 | [`docs/threat-model.md`](docs/threat-model.md) | Trust boundaries and honest security limits |
 | [`docs/risks.md`](docs/risks.md) | What could stall this project |
 

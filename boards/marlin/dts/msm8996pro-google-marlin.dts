@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Google Pixel XL (marlin) — Qualcomm MSM8996 Pro / Snapdragon 821
+ *
+ * STAGE 1 SKELETON — boot + serial console only.
+ *
+ * This is deliberately the smallest device tree that can produce the first
+ * observable signal in the roadmap: kernel log over serial. Storage (UFS),
+ * the Synaptics touchscreen, and the dual-DSI Samsung S6E3HA3 panel are each
+ * added later, one observable signal at a time — see
+ * boards/marlin/hardware.md and docs/roadmap.md stage 1.
+ *
+ * Structural template: msm8996pro-oneplus3t.dtsi — the same MSM8996 *Pro*
+ * silicon. Values marked VERIFY are derived from the downstream device tree
+ * (LineageOS android_kernel_google_marlin) or sibling mainline boards and
+ * MUST be confirmed against the actual hardware at bring-up. Nothing here is
+ * flashed: the image is booted transiently with `fastboot boot`.
+ */
+
+/dts-v1/;
+
+#include "msm8996pro.dtsi"
+
+/ {
+	model = "Google Pixel XL";
+	compatible = "google,marlin", "qcom,msm8996pro", "qcom,msm8996";
+	chassis-type = "handset";
+
+	aliases {
+		serial0 = &blsp1_uart2;
+	};
+
+	chosen {
+		/*
+		 * earlycon is the earliest possible signal: it prints from the
+		 * UART the bootloader already initialised, before any driver or
+		 * regulator probes. This is why the skeleton can omit the whole
+		 * regulator tree and still emit kernel log.
+		 *
+		 * VERIFY (the central stage-1 unknown): marlin's debug UART.
+		 *  - Downstream Qualcomm base (msm8996-mtp.dtsi) wires blsp1_uart2
+		 *    at 0x07570000, which is the guess encoded here.
+		 *  - But the OnePlus 3T uses blsp2_uart2 (0x075b0000) for its
+		 *    console and blsp1 for Bluetooth, so the choice is not
+		 *    obvious. If nothing appears, try 0x075b0000 / &blsp2_uart2.
+		 *  - Physical access on a Pixel is not a header pin: it is either
+		 *    internal test points or the USB-C sideband via a debug
+		 *    cable. Confirm the access path before concluding "no output".
+		 */
+		stdout-path = "serial0:115200n8";
+		bootargs = "earlycon=msm_serial_dm,0x07570000 console=ttyMSM0,115200n8";
+	};
+
+	/*
+	 * marlin has 4 GB; MSM8996 DRAM base is 0x80000000. The Android
+	 * bootloader (aboot) patches this node with the real memory map at
+	 * boot, and the SoC reserved-memory carveouts already live in
+	 * msm8996.dtsi. A conservative low range is enough for the skeleton.
+	 * VERIFY the full map (size and high-address split) against a stock
+	 * boot before relying on all 4 GB.
+	 */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x80000000>;
+	};
+};
+
+/* Debug / console UART — the one peripheral this skeleton turns on. */
+&blsp1_uart2 {
+	status = "okay";
+};

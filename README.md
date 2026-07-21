@@ -34,14 +34,32 @@ The kernel's driver ecosystem is the one component no individual can rewrite. Ev
 
 ## Status
 
-**Stage 0** — build environment and first boot under QEMU. See [`docs/roadmap.md`](docs/roadmap.md).
+**Stage 0 — complete.** A Rust PID 1 boots the mainline kernel under
+`qemu-system-aarch64 -M virt` and hands back an interactive shell;
+`/proc/1/comm` reports `init`. See [`docs/stage0-notes.md`](docs/stage0-notes.md).
+
+**Stage 1 — marlin bring-up, in progress.** Target: `fastboot boot` a Sarala
+image on the Pixel XL and get a shell over serial. Done so far, all off-device:
+
+- Hardware mined from the downstream device tree — touchscreen, panel,
+  regulators, UFS, serial ([`boards/marlin/hardware.md`](boards/marlin/hardware.md)).
+- A boot-and-console device-tree skeleton that compiles against the kernel
+  ([`boards/marlin/dts/`](boards/marlin/dts/)).
+- A `boot.img` packaged with marlin's verified boot geometry
+  ([`boards/marlin/boot-image.md`](boards/marlin/boot-image.md)).
+- Console access solved: marlin's debug UART is on the 3.5mm headphone jack,
+  and the bootloader accepts `fastboot oem uart enable`
+  ([`boards/marlin/serial-console.md`](boards/marlin/serial-console.md)).
+
+Blocked only on a physical UART cable before the first boot on hardware. No
+mainline marlin port existed to start from — this is a first port.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `init/` | PID 1, written in Rust |
-| `boards/marlin/` | Pixel XL device tree and port metadata — empty until stage 1 |
+| `boards/marlin/` | Pixel XL device tree and port notes — hardware facts, boot image, serial access |
 | `scripts/` | Image assembly and emulator invocation |
 | `docs/` | Design, roadmap, and honest accounting of risk |
 

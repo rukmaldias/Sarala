@@ -62,6 +62,57 @@ sleeve — cleaner but a less common cable and a solder mod. Reference:
 Recommendation: the 3.3 V FTDI build. Cheaper, no solder strictly required
 (header pins + bare TRRS leads joined by jumpers), confirmed on this device.
 
+## Confirmed working build (verified on this unit, 2026-07-23)
+
+Console output was achieved — the running kernel's `dmesg` (msm_pcie,
+cnss_wlan_pci, binder, battery charger) streamed live at 115200. Both bootloader
+*and* kernel output reach the jack. What actually worked, and the traps that
+cost hours:
+
+**Adapter used:** a generic **FT232RL USB-to-TTL board, USB-C** (silkscreen
+`V1350 / YP-05`), *not* the SparkFun board in the BOM above — functionally
+identical, same FTDI-Basic pinout. It has a **3.3 V / 5 V voltage-select jumper
+that must be on 3.3 V** (the SparkFun board is fixed-3.3 V and can't get this
+wrong). Note the USB-C connector supersedes the "USB mini-B cable" BOM line for
+this board.
+
+**Verified wire → signal mapping** (this specific TRRS pigtail; colours are
+*not* transferable to another cable):
+
+| Wire  | Signal | Plug contact |
+|-------|--------|--------------|
+| Red   | RXI    | Tip (phone TX)  |
+| White | TXO    | Ring1 (phone RX) |
+| Green | GND    | Ring2 |
+| Black | 3V3    | Sleeve (activation) |
+
+**Board pin layout** — always wire by the **silkscreen label, never by pin
+position**; the board's orientation flips the left↔right numbering but never the
+labels. Holding this board pins-up / USB-C-down, left→right:
+
+`GND · CTS · 3V3 · TXO · RXI · DTR` — so GND and 3V3 straddle CTS, and TXO/RXI
+are adjacent (which makes a TX/RX swap easy). Leave CTS and DTR empty.
+
+### Two traps that ate most of the bring-up session
+
+1. **macOS: use `/dev/cu.usbserial-*`, not `/dev/tty.usbserial-*`.** The `tty.`
+   node waits for carrier-detect (DCD) and just hangs / returns
+   `[screen is terminating]` with an FTDI; `cu.` (call-up) opens immediately.
+   This one masqueraded as a dead cable for a long time. Command:
+   `screen /dev/cu.usbserial-3 115200`.
+2. **Prove the adapter before blaming the cable — loopback test.** Short the
+   board's **RXI ↔ TXO** pins (jumper or paperclip), open `screen`, and type: a
+   working adapter echoes the characters straight back (screen does not
+   locally-echo, so what you see is the loop). Isolates Mac/driver/port faults
+   from cable/jack faults in 30 seconds. Do this first, every time.
+
+Cable colours were wrong on *both* pairs versus the initial guess — exactly the
+"colours are not standard, verify" failure. With no multimeter, brute-forcing
+the 4 pair-swap combinations found it; a multimeter would have been faster
+(there are 24 possible wire→contact orderings, and the 4-combo shortcut only
+works if the signal-pair vs ground/sleeve-pair grouping happens to be guessed
+right).
+
 ## How this connects to the boot image
 
 `earlycon=msm_serial_dm,0x7570000` in the cmdline (see

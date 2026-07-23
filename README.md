@@ -47,12 +47,15 @@ image on the Pixel XL and get a shell over serial. Done so far, all off-device:
   ([`boards/marlin/dts/`](boards/marlin/dts/)).
 - A `boot.img` packaged with marlin's verified boot geometry
   ([`boards/marlin/boot-image.md`](boards/marlin/boot-image.md)).
-- Console access solved: marlin's debug UART is on the 3.5mm headphone jack,
-  and the bootloader accepts `fastboot oem uart enable`
+- Console access solved **and verified on hardware**: marlin's debug UART is on
+  the 3.5mm headphone jack, the bootloader accepts `fastboot oem uart enable`,
+  and a DIY 3.3V FTDI cable now reads the live kernel log at 115200
   ([`boards/marlin/serial-console.md`](boards/marlin/serial-console.md)).
 
-Blocked only on a physical UART cable before the first boot on hardware. No
-mainline marlin port existed to start from — this is a first port.
+The cable — the prior blocker to any on-device work — is built and confirmed.
+The next gate is the **first `fastboot boot` of a Sarala image on real marlin**,
+watching for the kernel's own `earlycon` output. No mainline marlin port existed
+to start from — this is a first port.
 
 ## Layout
 

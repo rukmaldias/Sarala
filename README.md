@@ -2,6 +2,8 @@
 
 A minimal, non-Android mobile operating system for the Google Pixel XL.
 
+📖 **Documentation site:** <https://rukmaldias.github.io/Sarala/>
+
 Sarala is a learning project in mobile systems, built on one organising principle: **don't write a kernel, but own every line above it.** This is the Alpine Linux philosophy applied to a phone. Alpine's identity isn't a kernel — it's musl, busybox, OpenRC, and a deliberately small userspace. Sarala's identity will be its userspace too.
 
 ![intro image](images/intro.png)
@@ -67,6 +69,9 @@ to start from — this is a first port.
 | `docs/` | Design, roadmap, and honest accounting of risk |
 
 ## Documentation
+
+Browsable at **<https://rukmaldias.github.io/Sarala/>** (rendered from `docs/`
+and `boards/` with Docusaurus). The source files:
 
 | Document | Purpose |
 |---|---|

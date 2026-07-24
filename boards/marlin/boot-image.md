@@ -27,12 +27,24 @@ the **dtb concatenated onto the end**. Boot-image header v0 has no separate dtb
 field (that arrived in v2), so on marlin the dtb *must* ride with the kernel.
 aboot scans for the dtb magic after the kernel and matches by board-id.
 
-Stock compresses with lz4; aboot also accepts a raw `Image` and gzip. Start
-uncompressed — simplest, one fewer variable when chasing first boot:
+**The kernel MUST be compressed (gzip or lz4), not raw.** aboot only runs its
+appended-dtb search *after decompressing the kernel* — with a raw uncompressed
+`Image` it never looks for the dtb and fails with `dtb not found` regardless of
+correct IDs. This was the multi-hour trap on first boot (2026-07-24): raw,
+correct-ID, correctly-padded images all failed; the identical image with a
+**gzip**-compressed kernel booted immediately. gzip is self-delimiting, so aboot
+finds the appended dtb cleanly after the gzip stream. (Earlier advice to "start
+uncompressed, simplest" was wrong — deleted.)
 
 ```sh
-cat Image msm8996pro-google-marlin.dtb > Image-dtb
+gzip -n -9 -c Image > Image.gz
+cat Image.gz msm8996pro-google-marlin.dtb > Image.gz-dtb
 ```
+
+Note also: a raw arm64 `Image`'s header declares `image_size` (offset 0x10)
+**larger than the file** (it includes BSS). If ever appending to a raw Image, it
+must be zero-padded to `image_size` first or the dtb lands at the wrong offset.
+The gzip path sidesteps this entirely.
 
 ## Packaging recipe
 
@@ -51,6 +63,41 @@ mkbootimg \
 
 fastboot boot boot.img      # transient — flashes nothing
 ```
+
+(With `--kernel Image.gz-dtb` per the note above — not a raw `Image-dtb`.)
+
+## First on-hardware boot — confirmed (2026-07-24)
+
+The first `fastboot boot` on the physical Pixel XL. aboot accepted the image,
+**matched our dtb, and jumped to our kernel.** Captured over the serial console
+([`serial-console.md`](serial-console.md)). What the aboot log established:
+
+- **dtb match (authoritative IDs).** aboot logged
+  `Best match DTB tags 422/00000080/0x00000000/10001/20009/455013/0/0`
+  → msm-id **422**, board-id variant **0x80** / subtype **0**, soc_rev
+  **0x10001** (MSM8996 Pro **v1.1**), pmic `0x20009/0x455013`. These are now in
+  the dts. The initial `0x10000` (v1.0) guess did *not* match — the rev must be
+  exact; best-fit `<=` did not save it.
+- **aboot reached** `booting linux @ 0x80080000` → `Jumping to kernel via
+  monitor`. Geometry (base/offsets/pagesize/header-v0) all accepted as recorded
+  above.
+
+### Two hurdles now on the front line
+
+1. **No kernel output after the jump.** The console is silent once aboot hands
+   off — the kernel is faulting before `earlycon`, or `earlycon=msm_serial_dm`
+   isn't activating. Since aboot's *own* log came over this same UART, the path
+   is proven; this is kernel-side (check `CONFIG_SERIAL_MSM`/`SERIAL_EARLYCON`,
+   try bare `earlycon` via the DT `stdout-path`, sanity-check the skeleton DTB's
+   `/cpus`/PSCI/timer/memory). This is the current blocker.
+
+2. **aboot forces `skip_initramfs` (system-as-root / A-B).** The log shows aboot
+   appending `rootwait skip_initramfs init=/init` and a dm-verity
+   `root=/dev/dm-0 ... android-verity /dev/sda34` for `system_b`. Left as-is the
+   kernel will mount the real Android system and **ignore our initramfs**, so it
+   never reaches Sarala's `/init`. To get the stage-1 shell we must boot in a
+   mode aboot treats as recovery (where it does *not* add `skip_initramfs`).
+   Deferred until earlycon works, but recorded so it isn't a surprise.
 
 ## Command line
 

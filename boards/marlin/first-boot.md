@@ -179,17 +179,37 @@ faulting PC/address.
   (blsp2)** — its clock/registers NOC-abort on marlin (not routed/clocked). The
   console we *want* — `ttyMSM0` @ `0x7570000` — already works over the jack.
 
-## Next directions (updated)
+## Building the marlin dts — the skeleton is too minimal (2026-07-25)
 
-1. **Build a proper marlin dts** — the clear path now: real `/memory` +
-   `reserved-memory` (derive marlin's actual carveouts; the generic skeleton set
-   is insufficient), `console=ttyMSM0` (0x7570000, proven over the jack), and
-   ensure blsp2 (`75b0000.serial`) is not probed (disabled / not clocked). Crib
-   structure from oneplus3, keep marlin's IDs.
-2. **Defeat `skip_initramfs`** (recovery-mode boot) — still needed downstream of
-   the console, so the kernel runs Sarala's `/init` instead of mounting stock
+Tried to fix the skeleton incrementally, rebuilding each dtb from source in the
+kernel tree and booting on hardware. Ruled out, one variable at a time — **each
+still `NOC_ERROR`/`TZ ABORT`s before any console output:**
+
+- `/memory` size 0 (defer to aboot, matching oneplus3) — no change.
+- reserved-memory matched to oneplus3, incl. `ramoops@ac000000` — no change.
+- SoC base swapped `msm8996pro.dtsi` → `msm8996.dtsi` — no change.
+
+Meanwhile the **complete** oneplus3 dtb (marlin IDs) boots to 2.7 s and a
+working `ttyMSM0` console. The remaining difference is that oneplus3 **enables a
+full node set** (regulators, RPM/SMD, PMIC, USB, …) whereas our skeleton enables
+essentially only `blsp1_uart2`. So the kernel crashes at an early driver step
+that a complete dts gets past — the skeleton is **too minimal**, not
+mis-configured in memory/base/config.
+
+**Revised approach:** build marlin's dts *up from a complete sibling* — the
+roadmap's recommended `msm8996pro-oneplus3t.dtsi` (same MSM8996 **Pro** silicon)
+— keeping marlin's IDs, `console=ttyMSM0` on `blsp1_uart2` (the jack), and
+leaving `blsp2 (75b0000)` disabled. Trim board-specifics (panel/touch/battery)
+later; they probe long after the serial console we need for stage 1.
+
+### Remaining next steps
+
+1. **Build marlin's dts up from `msm8996pro-oneplus3t.dtsi`** (the Pro sibling),
+   per the revised approach above — the concrete task to get a booting console.
+2. **Defeat `skip_initramfs`** (recovery-mode boot) — needed downstream of the
+   console, so the kernel runs Sarala's `/init` instead of mounting stock
    Android's dm-verity system.
 
-(Done and folded in above: #2 earlycon-isolation, #3 downstream/complete-dtb
-comparison. Decoding the NOC ERRLOG / reading the ramdump is now optional — the
-oneplus3-dtb boot already localised the cause to the skeleton's memory map.)
+(Folded in above: #2 earlycon-isolation and #3 the complete-dtb comparison,
+which localised the blocker to the skeleton being too minimal — not memory,
+base, or config. NOC ERRLOG / ramdump decode is now unnecessary.)

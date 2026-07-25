@@ -6,11 +6,15 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 (packaging) and [`serial-console.md`](serial-console.md) (how the console is
 read).
 
-**Status:** aboot accepts our image, matches our dtb, and jumps to our kernel.
-The kernel now **executes** (it no longer silently hangs) but dies early with a
-**`NOC_ERROR` / `RPM:TZ ABORT!`** — a TrustZone XPU/interconnect fault — before
-`earlycon` produces output. Front line: the memory map / kernel config (see
-"Reference diff" below).
+**Status:** SOLVED what blocked early boot — **our skeleton DTB was the
+problem.** Booting a *complete* mainline dtb (oneplus3's, with marlin's IDs
+patched in) runs the kernel on marlin all the way to a **working console on
+`ttyMSM0` @ `0x7570000` (the jack)** and ~2.7 s of driver init. The skeleton's
+flat 2 GB `/memory` + minimal reserved-memory faulted the kernel very early
+(the `NOC_ERROR`/`TZ ABORT`). Remaining crash with the oneplus3 dtb: probing
+the *second* UART `75b0000.serial` (blsp2) NOC-aborts. Front line: build a
+proper marlin dts (real memory map + reserved-memory, `console=ttyMSM0`, and
+don't probe blsp2).
 
 ## Method
 
@@ -147,16 +151,45 @@ Note: on the abort, LK writes a **RAMDUMP** to the `ramdump` partition
 (`RAMDUMP_MSG.txt` + CPU register context) — a potential source for the exact
 faulting PC/address.
 
+### Isolation tests that cracked it (#2, #3)
+
+- **#2 — earlycon is not the fault.** Booting with `earlycon` removed still
+  `NOC_ERROR`s, so the console path is not the culprit.
+- **#3 — a complete dtb boots; the skeleton does not.** Compiled oneplus3's
+  `msm8996-oneplus3.dtb`, patched its `qcom,msm-id`/`board-id` to marlin's,
+  paired it with our lean pmOS kernel, and booted it on marlin. Result:
+
+  ```
+  [0.000000] Booting Linux on physical CPU 0x0 [0x512f2011]   (Kryo)
+  [0.000000] Machine model: OnePlus 3
+  [0.000000] earlycon: msm_serial_dm0 at MMIO 0x075b0000
+  ...
+  [2.720317] printk: legacy console [ttyMSM0] enabled          (0x7570000 = jack!)
+  ...
+  [2.731952] msm_serial 75b0000.serial: detected port #1
+  [2.735136] msm_serial 75b0000.serial: uartclk = <abort → LK restart>
+  ```
+
+  So: the kernel + our pmOS config are fine; marlin's TZ/hardware is fine to a
+  working console. **The skeleton DTB was the blocker.** oneplus3's dtb carries
+  the real memory map and extra reserved regions (rmtfs, mpss-metadata,
+  ramoops@ac000000 — note the earlier NOC addr `0x0ac0…`); ours reserved none of
+  those and claimed a flat 2 GB, so the kernel touched protected memory early.
+  The one remaining crash is the probe of the **second UART `75b0000.serial`
+  (blsp2)** — its clock/registers NOC-abort on marlin (not routed/clocked). The
+  console we *want* — `ttyMSM0` @ `0x7570000` — already works over the jack.
+
 ## Next directions (updated)
 
-1. **Read the crash context.** Decode the NOC ERRLOG
-   (`SNOC ERRLOG0=0x80030108/ERRLOG1=0xee008007`,
-   `PNOC ERRLOG0=0x80030308/ERRLOG1=0x0ac01005`) to identify the faulting
-   master/peripheral, and/or pull the `ramdump` partition for the faulting PC.
-2. **Isolate whether earlycon is the faulting access** — boot without `earlycon`
-   and see if the NOC abort persists (fault elsewhere) or reverts to a silent
-   hang (earlycon's UART setup is the access).
-3. **Compare marlin's downstream early init / memory map** against mainline for
-   a peripheral the mainline path touches that marlin's TZ protects.
-4. **Defeat `skip_initramfs`** (recovery-mode boot) — still needed downstream of
-   the console.
+1. **Build a proper marlin dts** — the clear path now: real `/memory` +
+   `reserved-memory` (derive marlin's actual carveouts; the generic skeleton set
+   is insufficient), `console=ttyMSM0` (0x7570000, proven over the jack), and
+   ensure blsp2 (`75b0000.serial`) is not probed (disabled / not clocked). Crib
+   structure from oneplus3, keep marlin's IDs.
+2. **Defeat `skip_initramfs`** (recovery-mode boot) — still needed downstream of
+   the console, so the kernel runs Sarala's `/init` instead of mounting stock
+   Android's dm-verity system.
+
+(Done and folded in above: #2 earlycon-isolation, #3 downstream/complete-dtb
+comparison. Decoding the NOC ERRLOG / reading the ramdump is now optional — the
+oneplus3-dtb boot already localised the cause to the skeleton's memory map.)

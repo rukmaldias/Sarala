@@ -6,9 +6,11 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 (packaging) and [`serial-console.md`](serial-console.md) (how the console is
 read).
 
-**Status:** aboot accepts our image, matches our dtb, and jumps to our kernel —
-but the kernel produces **no console output**, and the fault is before
-`earlycon`, where arm64 has no earlier debug. That is the current front line.
+**Status:** aboot accepts our image, matches our dtb, and jumps to our kernel.
+The kernel now **executes** (it no longer silently hangs) but dies early with a
+**`NOC_ERROR` / `RPM:TZ ABORT!`** — a TrustZone XPU/interconnect fault — before
+`earlycon` produces output. Front line: the memory map / kernel config (see
+"Reference diff" below).
 
 ## Method
 
@@ -88,14 +90,53 @@ kernel would **bypass our initramfs** and panic mounting a system it can't read.
 To reach Sarala's `/init` we must boot in a mode aboot treats as **recovery**
 (where it does not add `skip_initramfs`).
 
-## Next directions (not yet done)
+## Reference diff vs oneplus3 (msm8996-mainline, boots via stock aboot)
 
-1. **Diff against a known-good msm8996-mainline device** (e.g. oneplus3): its
-   kernel config, DTB, and exactly how its `boot.img` is built for stock aboot.
-   Siblings boot mainline via the same aboot + appended-dtb path — the delta is
-   the bug.
-2. **Earliest-possible output:** patch a raw UART write into the first
-   instructions of `head.S` to prove whether the kernel executes past entry at
-   all.
-3. **Defeat `skip_initramfs`** (recovery-mode boot) in parallel, so once the
-   console works we actually reach `/init`.
+Compared our build to postmarketOS `device-oneplus-oneplus3` +
+`linux-postmarketos-qcom-msm8996`. Findings:
+
+- **Kernel config (their config *boots* mainline on msm8996):**
+  - `CONFIG_ARM64_VA_BITS=48` — confirms our VA48 fix was right (defconfig's 52
+    is wrong for ARMv8.0).
+  - `CONFIG_RANDOMIZE_BASE=y` — KASLR is **kept on**, so it was a red herring;
+    disabling it was harmless but unnecessary.
+  - **`# CONFIG_EFI is not set`** — pmOS disables EFI; our defconfig has it on.
+    A real delta to try.
+- **boot.img offsets differ** (theirs, which boots):
+  `kernel 0x00008000, ramdisk 0x01000000, tags 0x00000100` vs our marlin/
+  LineageOS `kernel 0x00080000, ramdisk 0x02700000, tags 0x02500000`. Ours put
+  the dtb/ramdisk **inside the 41 MB kernel's load span** — the kernel image was
+  being clobbered, hence the earlier silent hang.
+
+### What the diff produced
+
+Moving the dtb/ramdisk clear of the kernel span (dtb low @ `0x80000100`,
+ramdisk @ `0x83000000`) changed the failure from **silent hang** to **the kernel
+running and taking a `NOC_ERROR` / `RPM:TZ ABORT!`** (SNOC/PNOC interconnect
+error, secure warm-reset, TZBSP crash log dumped by the restarted LK). A **PNOC
+(peripheral) NOC error before earlycon** points at an early access to a
+peripheral that is unclocked/XPU-protected — plausibly the earlycon UART write
+itself, or the kernel's early setup touching a region that marlin's TrustZone
+protects but our DTB doesn't reserve.
+
+Two compounding root issues:
+- **Fat kernel.** 41 MB (defconfig) leaves no room for boot artifacts in
+  marlin's known-usable low DRAM (`base … base+~40 MB`, per the downstream
+  offsets); the kernel nearly fills it. A lean config shrinks this.
+- **Generic reserved-memory.** Our DTB carries the *generic* mainline msm8996
+  carveouts (smem@86000000, mpss@88800000, mba@91500000, …). marlin/HTC's actual
+  TZ-protected map likely differs; regions TZ protects but we don't reserve →
+  XPU/NOC abort.
+
+## Next directions
+
+1. **Rebuild with a lean, msm8996-tuned config** (pmOS's, adapted to 6.16, with
+   `CONFIG_EFI` off): smaller kernel that fits under the known-good downstream
+   offsets, and a config proven to boot msm8996. Then repack with the original
+   marlin offsets (`kernel 0x80000, ramdisk 0x2700000, tags 0x2500000`).
+2. **Correct the memory map:** derive marlin's real reserved-memory carveouts
+   from the downstream device tree and match `/memory` + `reserved-memory`.
+3. **Decode the NOC ERRLOG** (`SNOC ERRLOG0=0x80030108`, `PNOC ERRLOG1=0x0ac01005`)
+   to identify the exact faulting master/peripheral.
+4. **Defeat `skip_initramfs`** (recovery-mode boot) so we reach `/init` once the
+   console lives.

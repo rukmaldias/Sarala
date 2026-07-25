@@ -115,10 +115,15 @@ right).
 
 ## How this connects to the boot image
 
-`earlycon=msm_serial_dm,0x7570000` in the cmdline (see
-[`boot-image.md`](boot-image.md)) drives this exact UART, before any driver or
-regulator probes. With `oem uart enable` set and the cable attached, that is the
-first output to watch for after `fastboot boot`.
+Use **bare `earlycon`** in the cmdline (see [`boot-image.md`](boot-image.md)),
+*not* `earlycon=msm_serial_dm,0x7570000`. Mainline `msm_serial.c` registers only
+`OF_EARLYCON_DECLARE(msm_serial_dm, "qcom,msm-uartdm", …)` — matched via the DT
+`stdout-path` (`serial0` → `serial@7570000`), not by the named `earlycon=` form
+(there is no bare `EARLYCON_DECLARE`). Bare `earlycon` therefore drives this
+exact UART before any driver or regulator probes; with `oem uart enable` set and
+the cable attached, that is the first output to watch for after `fastboot boot`.
+(As of the [first-boot log](first-boot.md), the kernel still emits nothing —
+it faults *before* earlycon — so this is necessary but not yet sufficient.)
 
 **One nuance to watch at bring-up:** `oem uart enable` sets the bootloader-level
 mux that routes `blsp1_uart2` to the jack. Bootloader and early-kernel

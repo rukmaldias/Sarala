@@ -56,13 +56,17 @@
 		 * marlin cmdline (console=ttyHSL0, the downstream name for this
 		 * UART; mainline enumerates it as ttyMSM0). See boot-image.md.
 		 *
-		 * VERIFY that remains: the physical access path. On a Pixel this
-		 * is not a header pin — it is internal test points or the USB-C
-		 * sideband via a debug cable. Confirm the access path before
-		 * concluding "no output" means the wrong UART.
+		 * Access path CONFIRMED: the 3.5mm headphone jack (TRRS), enabled
+		 * with `fastboot oem uart enable`. See serial-console.md.
+		 *
+		 * Use BARE `earlycon` (not `earlycon=msm_serial_dm,0x…`): mainline
+		 * registers only OF_EARLYCON_DECLARE(msm_serial_dm,"qcom,msm-uartdm"),
+		 * matched via this stdout-path, not the named earlycon= form. See
+		 * first-boot.md. (aboot overwrites /chosen/bootargs from the boot.img
+		 * cmdline on a normal boot; this value applies on a recovery boot.)
 		 */
 		stdout-path = "serial0:115200n8";
-		bootargs = "earlycon=msm_serial_dm,0x07570000 console=ttyMSM0,115200n8";
+		bootargs = "earlycon console=ttyMSM0,115200n8";
 	};
 
 	/*

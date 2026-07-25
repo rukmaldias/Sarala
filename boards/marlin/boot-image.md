@@ -58,7 +58,7 @@ mkbootimg \
   --tags_offset   0x02500000 \
   --pagesize      4096 \
   --header_version 0 \
-  --cmdline "earlycon=msm_serial_dm,0x7570000 console=ttyMSM0,115200n8" \
+  --cmdline "earlycon console=ttyMSM0,115200n8" \
   -o boot.img
 
 fastboot boot boot.img      # transient — flashes nothing
@@ -84,12 +84,15 @@ The first `fastboot boot` on the physical Pixel XL. aboot accepted the image,
 
 ### Two hurdles now on the front line
 
-1. **No kernel output after the jump.** The console is silent once aboot hands
-   off — the kernel is faulting before `earlycon`, or `earlycon=msm_serial_dm`
-   isn't activating. Since aboot's *own* log came over this same UART, the path
-   is proven; this is kernel-side (check `CONFIG_SERIAL_MSM`/`SERIAL_EARLYCON`,
-   try bare `earlycon` via the DT `stdout-path`, sanity-check the skeleton DTB's
-   `/cpus`/PSCI/timer/memory). This is the current blocker.
+Full narrative and everything ruled out: [`first-boot.md`](first-boot.md).
+
+1. **No kernel output — the kernel faults before `earlycon`.** Silent after the
+   jump. Ruled out: cmdline (bare `earlycon` is the correct form, not
+   `earlycon=msm_serial_dm,…`), kernel config (earlycon *is* built in), DTB
+   nodes (`/cpus`/PSCI/timer/GIC/memory all present), and VA_BITS/KASLR (a
+   rebuild with `VA_BITS_48` + KASLR off — the ARMv8.0-appropriate config — is
+   still silent). Since arm64 has no pre-earlycon debug, this is the wall. Next:
+   diff against a known-good msm8996-mainline device.
 
 2. **aboot forces `skip_initramfs` (system-as-root / A-B).** The log shows aboot
    appending `rootwait skip_initramfs init=/init` and a dm-verity

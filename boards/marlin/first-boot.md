@@ -128,15 +128,35 @@ Two compounding root issues:
   TZ-protected map likely differs; regions TZ protects but we don't reserve →
   XPU/NOC abort.
 
-## Next directions
+### Rebuilt with pmOS's msm8996 config — NOC_ERROR persists
 
-1. **Rebuild with a lean, msm8996-tuned config** (pmOS's, adapted to 6.16, with
-   `CONFIG_EFI` off): smaller kernel that fits under the known-good downstream
-   offsets, and a config proven to boot msm8996. Then repack with the original
-   marlin offsets (`kernel 0x80000, ramdisk 0x2700000, tags 0x2500000`).
-2. **Correct the memory map:** derive marlin's real reserved-memory carveouts
-   from the downstream device tree and match `/memory` + `reserved-memory`.
-3. **Decode the NOC ERRLOG** (`SNOC ERRLOG0=0x80030108`, `PNOC ERRLOG1=0x0ac01005`)
-   to identify the exact faulting master/peripheral.
-4. **Defeat `skip_initramfs`** (recovery-mode boot) so we reach `/init` once the
-   console lives.
+Built the kernel from postmarketOS's `config-postmarketos-qcom-msm8996` (adapted
+to 6.16, `EFI` off, `VA_BITS_48`): a lean **25 MB** kernel (ends `~0x81a50000`),
+repacked with the **original downstream offsets** (tags `0x82500000`, ramdisk
+`0x82700000` — now clear of the kernel, no collision). **Same `NOC_ERROR` /
+`RPM:TZ ABORT!` before earlycon.**
+
+So the fault is **not** config, kernel size, or artifact placement — all now
+match a known-good msm8996 setup. The kernel executes and takes an early
+**PNOC (peripheral) interconnect fault** that TrustZone rejects, before any
+console. This is a genuine, marlin-specific early hardware access — the stock
+*and* downstream kernels reach this UART (we saw stock Android dmesg on the jack),
+so it is something the *mainline* early path touches that marlin's TZ/XPU blocks.
+
+Note: on the abort, LK writes a **RAMDUMP** to the `ramdump` partition
+(`RAMDUMP_MSG.txt` + CPU register context) — a potential source for the exact
+faulting PC/address.
+
+## Next directions (updated)
+
+1. **Read the crash context.** Decode the NOC ERRLOG
+   (`SNOC ERRLOG0=0x80030108/ERRLOG1=0xee008007`,
+   `PNOC ERRLOG0=0x80030308/ERRLOG1=0x0ac01005`) to identify the faulting
+   master/peripheral, and/or pull the `ramdump` partition for the faulting PC.
+2. **Isolate whether earlycon is the faulting access** — boot without `earlycon`
+   and see if the NOC abort persists (fault elsewhere) or reverts to a silent
+   hang (earlycon's UART setup is the access).
+3. **Compare marlin's downstream early init / memory map** against mainline for
+   a peripheral the mainline path touches that marlin's TZ protects.
+4. **Defeat `skip_initramfs`** (recovery-mode boot) — still needed downstream of
+   the console.

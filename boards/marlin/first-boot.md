@@ -6,16 +6,12 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 (packaging) and [`serial-console.md`](serial-console.md) (how the console is
 read).
 
-**Status:** **Kernel log over serial on real marlin — the stage-1 first
-signal.** A oneplus3t-based marlin dts (`msm8996pro.dtsi` +
-`msm8996-oneplus-common.dtsi` + marlin IDs) boots the kernel and prints 400+
-lines to `ttyMSM0` over the jack (`blsp1_uart2`, 0x7570000). The earlier
-skeleton faulted early because it was **too minimal** (no regulators/PMIC/
-pinctrl); the oneplus common substrate supplies them. **Known issue:** blsp2
-(`75b0000.serial`, oneplus's console, unused on marlin) is enabled and its probe
-NOC-aborts at ~2.7 s; disabling it in isolation broke the console path, so it's
-the next thing to resolve. Also: bare `earlycon` on blsp1_uart2 faults early —
-use `console=ttyMSM0` only.
+**Status:** **Kernel boots with a live serial console, past the blsp2 crash.**
+A oneplus3t-based marlin dts (`msm8996pro.dtsi` + `msm8996-oneplus-common.dtsi`
++ marlin IDs) boots the kernel; `ttyMSM0` on the jack (`blsp1_uart2`, 0x7570000)
+shows the log from ~2.7 s. blsp2 is now disabled (its probe NOC-aborted) and the
+boot reaches **~2.79 s**. Next crash: **`arm-smmu@d00000`** (an IOMMU) faults
+mid-probe — the next unpowered peripheral to handle.
 
 ## Method
 
@@ -216,28 +212,48 @@ on hardware. What the isolation showed:
 - **Adding just the PM8994 RPM regulators to the skeleton was NOT enough** — the
   full common substrate is needed (something beyond the regulators, in the
   node-enable set, matters).
-- **Bare `earlycon` on `blsp1_uart2` (0x7570000) faults early** (isolated: only
-  changing stdout to serial0 reintroduces the NOC abort). The `ttyMSM0` *driver*
-  brings the same UART up fine at 2.7 s (clocks on). So: no earlycon; rely on
-  `console=ttyMSM0`.
-- **blsp2 (`75b0000.serial`) probe NOC-aborts** at ~2.7 s (unclocked on marlin).
-  Disabling it broke the console path in testing (no output) — unresolved; the
-  interaction with the console/earlycon config needs untangling. Capture timing
-  is also flaky here (LK's `oem uart enable` floods the UART), which slowed the
-  blsp2 experiments.
+## Resolving the blsp2 crash + the console knot (2026-07-26)
+
+First, the "capture flakiness": `oem uart enable` does **not** flood the UART
+(8 s idle after it = ~380 bytes). The big captures were the *boot's* crash/reset
+noise, and the misleading "jump at 100% of bytes" is just because a crash dumps
+a lot then goes quiet. Clean method: start the capture, then `oem uart enable`,
+then `fastboot boot`; analyse by content, not byte-offset.
+
+Then the console knot, isolated on hardware:
+
+- **`earlycon` is load-bearing** — with it removed (even on the working Test A
+  dtb) the kernel goes silent and hangs before the `ttyMSM0` driver comes up at
+  ~2.7 s. (So the earlier "no earlycon, rely on ttyMSM0" idea was wrong.)
+- **earlycon is OF-only** — `msm_serial.c` has just `OF_EARLYCON_DECLARE`, no
+  address-based `EARLYCON_DECLARE`. So `earlycon=msm_serial_dm,ADDR` does
+  nothing; earlycon must bind via DT `stdout-path` to a `qcom,msm-uartdm` node.
+- **earlycon on blsp1 (the jack, 0x7570000) faults early**; earlycon on blsp2
+  (0x75b0000) works. (Opposite of intuition — likely the jack UART's LK/oem-uart
+  state vs blsp2's default state; not fully explained.)
+- **blsp2's driver probe NOC-aborts** (its registers aren't accessible on
+  marlin) — so it must be disabled.
+
+**The fix (works):** disable blsp2's *driver* (`status = "disabled"`) but keep
+`stdout-path = serial1` (blsp2) — `of_setup_earlycon` binds earlycon to the
+node's `reg` regardless of status, so earlycon still lives on 0x75b0000 (load-
+bearing) while the platform driver skips blsp2 (no probe crash). Boot cmdline:
+`earlycon console=ttyMSM0,115200n8`. Visible console is `ttyMSM0` on the jack
+from ~2.7 s. **Result: boots past blsp2 to ~2.79 s.**
+
+## Next crash: `arm-smmu@d00000` (2026-07-26)
+
+Past blsp2, the kernel now faults mid-probe of the second IOMMU,
+`arm-smmu d00000.iommu` (the first, `b40000`, probes fine). Same pattern as
+blsp2 — a peripheral whose register access NOC-aborts on marlin. Iterative
+bring-up: disable/handle it, see the next.
 
 ### Remaining next steps
 
-1. **Resolve the blsp2 crash** without losing the console — figure out why
-   disabling blsp2 kills `ttyMSM0` output, or give blsp2 the clock it needs, so
-   the boot continues past ~2.7 s.
-2. **Trim oneplus-specifics** — replace the borrowed `msm8996-oneplus-common`
-   config with a marlin-specific node set (keep regulators/console; drop
-   oneplus panel/touch/sound).
+1. **Handle `arm-smmu@d00000`** (disable or power it) and continue past each
+   subsequent unpowered-peripheral NOC abort.
+2. **Trim oneplus-specifics** — replace borrowed `msm8996-oneplus-common` with a
+   marlin-specific node set (keep regulators/console; drop panel/touch/sound).
 3. **Defeat `skip_initramfs`** (recovery-mode boot) — so the kernel runs
    Sarala's `/init` instead of mounting stock Android's dm-verity system, to
    reach the stage-1 shell.
-
-(Folded in above: #2 earlycon-isolation and #3 the complete-dtb comparison,
-which localised the blocker to the skeleton being too minimal — not memory,
-base, or config. NOC ERRLOG / ramdump decode is now unnecessary.)

@@ -9,22 +9,28 @@
  * The oneplus msm8996 common dtsi supplies exactly that and is proven to boot
  * msm8996 to a console, so we reuse it here.
  *
- * RESULT (verified on hardware 2026-07-26): the kernel boots and 400+ lines of
- * kernel log appear on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) —
- * the stage-1 "kernel log over serial" signal, on real marlin.
- *
- * KNOWN ISSUE: with the oneplus config, blsp2_uart2 (0x75b0000, oneplus's
- * console — unused on marlin) is enabled and its probe NOC-aborts at ~2.7 s
- * once the console is up. Disabling it in isolation broke the console path in
- * testing, so it is left as the next thing to resolve. See first-boot.md.
+ * RESULT (verified on hardware 2026-07-26): the kernel boots and kernel log
+ * appears on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) — the stage-1
+ * "kernel log over serial" signal, on real marlin — now past the blsp2 crash to
+ * ~2.79 s (next crash: arm-smmu@d00000; see first-boot.md).
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
- * oneplus board (its regulators/panel/touch/sound). This is a stage-1 stepping
- * stone to a live console; a marlin-specific node set replaces it later.
+ * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
+ * live console; a marlin-specific node set replaces it later.
  *
- * Console: bare `earlycon` on blsp1_uart2 faults early (see first-boot.md) — do
- * NOT use it. Use `console=ttyMSM0,115200n8` only; the driver brings the UART up
- * (with clocks) at ~2.7 s.
+ * CONSOLE (subtle — see first-boot.md):
+ *  - blsp2_uart2 (0x75b0000, oneplus's console) is UNUSED on marlin; its driver
+ *    probe NOC-aborts, so it is disabled below.
+ *  - but `earlycon` is load-bearing (without it the kernel hangs before the
+ *    ttyMSM0 driver comes up at ~2.7 s), and it can only bind via the DT
+ *    stdout-path to a "qcom,msm-uartdm" node. of_setup_earlycon uses the node's
+ *    reg even when the node is `disabled`, while the platform driver skips it —
+ *    so keeping stdout-path = serial1 (blsp2) gives earlycon on 0x75b0000
+ *    WITHOUT the driver probe crash. (earlycon on blsp1/jack faults early.)
+ *  - visible output is ttyMSM0 (0x7570000, jack), which the driver brings up
+ *    with clocks at ~2.7 s.
+ *  Boot with cmdline: `earlycon console=ttyMSM0,115200n8` (stdout-path stays
+ *  serial1, inherited from oneplus-common).
  */
 /dts-v1/;
 
@@ -39,4 +45,13 @@
 	/* aboot dtb-match IDs — confirmed from the aboot log (MSM8996 Pro v1.1). */
 	qcom,msm-id = <422 0x10001>, <423 0x10001>;
 	qcom,board-id = <0x80 0>;
+};
+
+/*
+ * blsp2_uart2 is oneplus's console; unused on marlin and its register access
+ * NOC-aborts. Disable the driver probe. earlycon still binds to it via
+ * stdout-path (of_setup_earlycon ignores status) — see the CONSOLE note above.
+ */
+&blsp2_uart2 {
+	status = "disabled";
 };

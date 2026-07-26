@@ -279,6 +279,15 @@ just disable the ones we don't need; each fix reveals the next.
   left off and the mainline power-domain drivers aren't bringing up on marlin —
   rather than N independent faults. Fixing that could clear many at once; vs.
   the current disable-each-in-turn approach.
+- **The crash is timing-sensitive — evidence it's systemic/async.** To name the
+  post-i2c crasher, added `dyndbg`-style per-probe logging. The extra UART
+  output (at 115200) slowed the boot and the crash **moved earlier** — reset at
+  `smp2p-mpss` (~15.9 s) instead of the i2c area (~13 s, consistent across the
+  non-verbose runs). A crash point that shifts with logging is an **async fault**
+  (an IRQ / remoteproc / SMP2P callback from an unpowered subsystem), not a
+  deterministic per-device probe. Whack-a-mole (disable the next device) will
+  not converge on a moving target. **Recommend pivoting to the power-domain /
+  interrupt-source investigation** rather than disabling more nodes.
 
 ### Ops note — recovering a wedged phone
 

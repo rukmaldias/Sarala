@@ -1,89 +1,42 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Google Pixel XL (marlin) — Qualcomm MSM8996 Pro / Snapdragon 821
+ * Google Pixel XL (marlin) — Qualcomm MSM8996 Pro.
  *
- * STAGE 1 SKELETON — boot + serial console only.
+ * STAGE 1 bring-up. Built up from the Pro sibling's substrate rather than a
+ * bare skeleton: a minimal skeleton (SoC dtsi + just the console UART) faults
+ * the mainline kernel very early (NOC_ERROR / TrustZone abort, before any
+ * console) — it is missing the regulators/PMIC/pinctrl a real board carries.
+ * The oneplus msm8996 common dtsi supplies exactly that and is proven to boot
+ * msm8996 to a console, so we reuse it here.
  *
- * This is deliberately the smallest device tree that can produce the first
- * observable signal in the roadmap: kernel log over serial. Storage (UFS),
- * the Synaptics touchscreen, and the dual-DSI Samsung S6E3HA3 panel are each
- * added later, one observable signal at a time — see
- * boards/marlin/hardware.md and docs/roadmap.md stage 1.
+ * RESULT (verified on hardware 2026-07-26): the kernel boots and 400+ lines of
+ * kernel log appear on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) —
+ * the stage-1 "kernel log over serial" signal, on real marlin.
  *
- * Structural template: msm8996pro-oneplus3t.dtsi — the same MSM8996 *Pro*
- * silicon. Values marked VERIFY are derived from the downstream device tree
- * (LineageOS android_kernel_google_marlin) or sibling mainline boards and
- * MUST be confirmed against the actual hardware at bring-up. Nothing here is
- * flashed: the image is booted transiently with `fastboot boot`.
+ * KNOWN ISSUE: with the oneplus config, blsp2_uart2 (0x75b0000, oneplus's
+ * console — unused on marlin) is enabled and its probe NOC-aborts at ~2.7 s
+ * once the console is up. Disabling it in isolation broke the console path in
+ * testing, so it is left as the next thing to resolve. See first-boot.md.
+ *
+ * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
+ * oneplus board (its regulators/panel/touch/sound). This is a stage-1 stepping
+ * stone to a live console; a marlin-specific node set replaces it later.
+ *
+ * Console: bare `earlycon` on blsp1_uart2 faults early (see first-boot.md) — do
+ * NOT use it. Use `console=ttyMSM0,115200n8` only; the driver brings the UART up
+ * (with clocks) at ~2.7 s.
  */
-
 /dts-v1/;
 
 #include "msm8996pro.dtsi"
+#include "msm8996-oneplus-common.dtsi"
 
 / {
 	model = "Google Pixel XL";
 	compatible = "google,marlin", "qcom,msm8996pro", "qcom,msm8996";
 	chassis-type = "handset";
 
-	/*
-	 * Qualcomm dtb-selection IDs. marlin's aboot does not read `compatible`
-	 * — it scans the appended dtb for these and matches against SMEM board
-	 * info. Without them, `fastboot boot` fails with `dtb not found`.
-	 *
-	 * CONFIRMED by aboot's own log on this unit (2026-07-24):
-	 *   Best match DTB tags 422/00000080/0x00000000/10001/20009/455013/0/0
-	 * i.e. msm-id 422, board-id variant 0x80 / subtype 0, soc_rev 0x10001
-	 * (MSM8996 Pro *v1.1* — matches /sys/devices/soc0/revision "1.1"; the
-	 * earlier 0x10000/v1.0 guess did NOT match). 423 is the second bin.
-	 * pmic (0x20009/0x455013) is filled in by aboot, so qcom,pmic-id omitted.
-	 */
+	/* aboot dtb-match IDs — confirmed from the aboot log (MSM8996 Pro v1.1). */
 	qcom,msm-id = <422 0x10001>, <423 0x10001>;
 	qcom,board-id = <0x80 0>;
-
-	aliases {
-		serial0 = &blsp1_uart2;
-	};
-
-	chosen {
-		/*
-		 * earlycon is the earliest possible signal: it prints from the
-		 * UART the bootloader already initialised, before any driver or
-		 * regulator probes. This is why the skeleton can omit the whole
-		 * regulator tree and still emit kernel log.
-		 *
-		 * Debug UART is blsp1_uart2 at 0x07570000 — CONFIRMED by the stock
-		 * marlin cmdline (console=ttyHSL0, the downstream name for this
-		 * UART; mainline enumerates it as ttyMSM0). See boot-image.md.
-		 *
-		 * Access path CONFIRMED: the 3.5mm headphone jack (TRRS), enabled
-		 * with `fastboot oem uart enable`. See serial-console.md.
-		 *
-		 * Use BARE `earlycon` (not `earlycon=msm_serial_dm,0x…`): mainline
-		 * registers only OF_EARLYCON_DECLARE(msm_serial_dm,"qcom,msm-uartdm"),
-		 * matched via this stdout-path, not the named earlycon= form. See
-		 * first-boot.md. (aboot overwrites /chosen/bootargs from the boot.img
-		 * cmdline on a normal boot; this value applies on a recovery boot.)
-		 */
-		stdout-path = "serial0:115200n8";
-		bootargs = "earlycon console=ttyMSM0,115200n8";
-	};
-
-	/*
-	 * marlin has 4 GB; MSM8996 DRAM base is 0x80000000. The Android
-	 * bootloader (aboot) patches this node with the real memory map at
-	 * boot, and the SoC reserved-memory carveouts already live in
-	 * msm8996.dtsi. A conservative low range is enough for the skeleton.
-	 * VERIFY the full map (size and high-address split) against a stock
-	 * boot before relying on all 4 GB.
-	 */
-	memory@80000000 {
-		device_type = "memory";
-		reg = <0x0 0x80000000 0x0 0x80000000>;
-	};
-};
-
-/* Debug / console UART — the one peripheral this skeleton turns on. */
-&blsp1_uart2 {
-	status = "okay";
 };

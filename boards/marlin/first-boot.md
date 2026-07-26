@@ -6,15 +6,16 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 (packaging) and [`serial-console.md`](serial-console.md) (how the console is
 read).
 
-**Status:** SOLVED what blocked early boot — **our skeleton DTB was the
-problem.** Booting a *complete* mainline dtb (oneplus3's, with marlin's IDs
-patched in) runs the kernel on marlin all the way to a **working console on
-`ttyMSM0` @ `0x7570000` (the jack)** and ~2.7 s of driver init. The skeleton's
-flat 2 GB `/memory` + minimal reserved-memory faulted the kernel very early
-(the `NOC_ERROR`/`TZ ABORT`). Remaining crash with the oneplus3 dtb: probing
-the *second* UART `75b0000.serial` (blsp2) NOC-aborts. Front line: build a
-proper marlin dts (real memory map + reserved-memory, `console=ttyMSM0`, and
-don't probe blsp2).
+**Status:** **Kernel log over serial on real marlin — the stage-1 first
+signal.** A oneplus3t-based marlin dts (`msm8996pro.dtsi` +
+`msm8996-oneplus-common.dtsi` + marlin IDs) boots the kernel and prints 400+
+lines to `ttyMSM0` over the jack (`blsp1_uart2`, 0x7570000). The earlier
+skeleton faulted early because it was **too minimal** (no regulators/PMIC/
+pinctrl); the oneplus common substrate supplies them. **Known issue:** blsp2
+(`75b0000.serial`, oneplus's console, unused on marlin) is enabled and its probe
+NOC-aborts at ~2.7 s; disabling it in isolation broke the console path, so it's
+the next thing to resolve. Also: bare `earlycon` on blsp1_uart2 faults early —
+use `console=ttyMSM0` only.
 
 ## Method
 
@@ -202,13 +203,40 @@ roadmap's recommended `msm8996pro-oneplus3t.dtsi` (same MSM8996 **Pro** silicon)
 leaving `blsp2 (75b0000)` disabled. Trim board-specifics (panel/touch/battery)
 later; they probe long after the serial console we need for stage 1.
 
+## oneplus3t-based dts — kernel log over serial (2026-07-26)
+
+Built marlin's dts up from the Pro sibling substrate and boot-tested each step
+on hardware. What the isolation showed:
+
+- **`msm8996pro.dtsi` + `msm8996-oneplus-common.dtsi` + marlin IDs boots** — to
+  `ttyMSM0` on the jack at ~2.7 s, 400+ kernel log lines. This is the current
+  `dts/msm8996pro-google-marlin.dts`.
+- **The Pro base is fine** — pro-vs-nonpro was not the issue; the substrate
+  (regulators/PMIC/pinctrl from oneplus-common) is what the skeleton lacked.
+- **Adding just the PM8994 RPM regulators to the skeleton was NOT enough** — the
+  full common substrate is needed (something beyond the regulators, in the
+  node-enable set, matters).
+- **Bare `earlycon` on `blsp1_uart2` (0x7570000) faults early** (isolated: only
+  changing stdout to serial0 reintroduces the NOC abort). The `ttyMSM0` *driver*
+  brings the same UART up fine at 2.7 s (clocks on). So: no earlycon; rely on
+  `console=ttyMSM0`.
+- **blsp2 (`75b0000.serial`) probe NOC-aborts** at ~2.7 s (unclocked on marlin).
+  Disabling it broke the console path in testing (no output) — unresolved; the
+  interaction with the console/earlycon config needs untangling. Capture timing
+  is also flaky here (LK's `oem uart enable` floods the UART), which slowed the
+  blsp2 experiments.
+
 ### Remaining next steps
 
-1. **Build marlin's dts up from `msm8996pro-oneplus3t.dtsi`** (the Pro sibling),
-   per the revised approach above — the concrete task to get a booting console.
-2. **Defeat `skip_initramfs`** (recovery-mode boot) — needed downstream of the
-   console, so the kernel runs Sarala's `/init` instead of mounting stock
-   Android's dm-verity system.
+1. **Resolve the blsp2 crash** without losing the console — figure out why
+   disabling blsp2 kills `ttyMSM0` output, or give blsp2 the clock it needs, so
+   the boot continues past ~2.7 s.
+2. **Trim oneplus-specifics** — replace the borrowed `msm8996-oneplus-common`
+   config with a marlin-specific node set (keep regulators/console; drop
+   oneplus panel/touch/sound).
+3. **Defeat `skip_initramfs`** (recovery-mode boot) — so the kernel runs
+   Sarala's `/init` instead of mounting stock Android's dm-verity system, to
+   reach the stage-1 shell.
 
 (Folded in above: #2 earlycon-isolation and #3 the complete-dtb comparison,
 which localised the blocker to the skeleton being too minimal — not memory,

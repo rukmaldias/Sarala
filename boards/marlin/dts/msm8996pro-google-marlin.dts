@@ -11,8 +11,10 @@
  *
  * RESULT (verified on hardware 2026-07-26): the kernel boots and kernel log
  * appears on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) — the stage-1
- * "kernel log over serial" signal, on real marlin — now past the blsp2 crash to
- * ~2.79 s (next crash: arm-smmu@d00000; see first-boot.md).
+ * "kernel log over serial" signal, on real marlin. Iterating past NOC aborts
+ * from unpowered peripherals (SMMUs + the whole BLSP2 block): VERIFIED past all
+ * of them to ~2.97 s with no more resets. It then HANGS (no reset) at an I2C
+ * device probe on BLSP1 — the next thing to chase. See first-boot.md.
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
@@ -48,10 +50,22 @@
 };
 
 /*
- * blsp2_uart2 is oneplus's console; unused on marlin and its register access
- * NOC-aborts. Disable the driver probe. earlycon still binds to it via
- * stdout-path (of_setup_earlycon ignores status) — see the CONSOLE note above.
+ * The whole BLSP2 block (0x75bxxxx) is dead/inaccessible on marlin — register
+ * access NOC-aborts. Disable every BLSP2 peripheral oneplus-common enables.
+ * (blsp2_uart2's driver is disabled, but earlycon still binds to it via
+ * stdout-path — of_setup_earlycon ignores status; see the CONSOLE note above.)
  */
-&blsp2_uart2 {
-	status = "disabled";
-};
+&blsp2_uart2 { status = "disabled"; };
+&blsp2_i2c1  { status = "disabled"; };
+&blsp2_i2c6  { status = "disabled"; };
+
+/*
+ * Multimedia (MMSS) and audio (LPASS) IOMMUs: register access NOC-aborts
+ * because those power domains aren't up, and none are needed for a stage-1
+ * serial boot. adreno_smmu (GPU) probes fine and is left enabled. VERIFIED:
+ * disabling these gets the boot past all SMMUs (~2.94 s).
+ */
+&mdp_smmu      { status = "disabled"; };
+&venus_smmu    { status = "disabled"; };
+&vfe_smmu      { status = "disabled"; };
+&lpass_q6_smmu { status = "disabled"; };

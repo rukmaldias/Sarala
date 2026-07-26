@@ -6,12 +6,12 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 (packaging) and [`serial-console.md`](serial-console.md) (how the console is
 read).
 
-**Status:** **Kernel boots with a live serial console, past the blsp2 crash.**
-A oneplus3t-based marlin dts (`msm8996pro.dtsi` + `msm8996-oneplus-common.dtsi`
-+ marlin IDs) boots the kernel; `ttyMSM0` on the jack (`blsp1_uart2`, 0x7570000)
-shows the log from ~2.7 s. blsp2 is now disabled (its probe NOC-aborted) and the
-boot reaches **~2.79 s**. Next crash: **`arm-smmu@d00000`** (an IOMMU) faults
-mid-probe — the next unpowered peripheral to handle.
+**Status:** **Kernel boots with a live serial console, past every NOC abort so
+far, to ~2.97 s.** Disabling the MMSS/LPASS IOMMUs (mdp/venus/vfe/lpass_q6;
+adreno stays) and the whole dead **BLSP2 block** (uart2 + i2c1/i2c6) clears all
+the unpowered-peripheral NOC-abort resets. It now **hangs** (no reset — a
+different failure) at ~2.97 s, at an I2C *device* probe on BLSP1 (likely a
+touch/sensor waiting on a regulator/reset). That's the next thing to chase.
 
 ## Method
 
@@ -241,17 +241,40 @@ bearing) while the platform driver skips blsp2 (no probe crash). Boot cmdline:
 `earlycon console=ttyMSM0,115200n8`. Visible console is `ttyMSM0` on the jack
 from ~2.7 s. **Result: boots past blsp2 to ~2.79 s.**
 
-## Next crash: `arm-smmu@d00000` (2026-07-26)
+## Iterating past NOC aborts (2026-07-26)
 
-Past blsp2, the kernel now faults mid-probe of the second IOMMU,
-`arm-smmu d00000.iommu` (the first, `b40000`, probes fine). Same pattern as
-blsp2 — a peripheral whose register access NOC-aborts on marlin. Iterative
-bring-up: disable/handle it, see the next.
+The pattern: peripherals whose power domain/clock the bootloader left off
+NOC-abort when the driver touches their registers. For a stage-1 serial boot we
+just disable the ones we don't need; each fix reveals the next.
+
+- **IOMMUs.** `arm-smmu@d00000` (`mdp_smmu`) faulted; so do `venus_smmu`
+  (d40000) and `vfe_smmu` (da0000) — the MMSS multimedia SMMUs — and
+  `lpass_q6_smmu` (1600000, audio). `adreno_smmu` (b40000, GPU) probes fine.
+  Disabling the four MMSS/LPASS SMMUs → **verified past all SMMUs to ~2.94 s.**
+- **BLSP2 is dead on marlin.** Next fault was `75b5000.i2c` — a BLSP2 I2C bus.
+  With blsp2_uart2, the whole BLSP2 block (`0x75bxxxx`) is inaccessible (register
+  access NOC-aborts); BLSP1 I2C (7577000/757a000) is fine. Disabled the enabled
+  BLSP2 I2C buses (`blsp2_i2c1`, `blsp2_i2c6`) — **VERIFIED: boot now clears all
+  NOC aborts, no reset, reaches ~2.97 s.**
+- **New failure mode: a hang, not a NOC abort.** After the BLSP1 I2C controllers
+  probe, the kernel goes silent at ~2.97 s with **no reset** (34 KB of log after
+  the jump, then nothing). That's a probe *hang* — likely an I2C device (touch/
+  sensor) waiting on a regulator/reset that never arrives — distinct from the
+  register-access NOC aborts handled above.
+
+### Ops note — recovering a wedged phone
+
+Repeated crash-boots can leave the phone off the USB bus (no adb/fastboot, not
+enumerating) and not auto-recovering. Force a reboot: **hold Power + Volume-Down
+~10–15 s.** It returns to Android (or bootloader). Also: after a crash-boot the
+phone takes ~30 s+ to reset to Android, so wait for adb/fastboot before the next
+`fastboot boot` (racing it fails with "no devices").
 
 ### Remaining next steps
 
-1. **Handle `arm-smmu@d00000`** (disable or power it) and continue past each
-   subsequent unpowered-peripheral NOC abort.
+1. **Chase the ~2.97 s hang** — an I2C device probe on BLSP1 that stalls (no
+   reset). Identify the device (touch/sensor per hardware.md) and disable it or
+   give it its regulator/reset; then continue.
 2. **Trim oneplus-specifics** — replace borrowed `msm8996-oneplus-common` with a
    marlin-specific node set (keep regulators/console; drop panel/touch/sound).
 3. **Defeat `skip_initramfs`** (recovery-mode boot) — so the kernel runs

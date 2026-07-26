@@ -6,12 +6,15 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 (packaging) and [`serial-console.md`](serial-console.md) (how the console is
 read).
 
-**Status:** **Kernel boots with a live serial console, past every NOC abort so
-far, to ~2.97 s.** Disabling the MMSS/LPASS IOMMUs (mdp/venus/vfe/lpass_q6;
-adreno stays) and the whole dead **BLSP2 block** (uart2 + i2c1/i2c6) clears all
-the unpowered-peripheral NOC-abort resets. It now **hangs** (no reset — a
-different failure) at ~2.97 s, at an I2C *device* probe on BLSP1 (likely a
-touch/sensor waiting on a regulator/reset). That's the next thing to chase.
+**Status:** **Kernel boots with a live serial console, deep into
+`deferred_probe` (~13 s).** `initcall_debug` showed the earlier "2.97 s hang"
+was actually slow *silent* deferred-probe work — the kernel is running much
+further than it looked. Disabled so far: MMSS/LPASS IOMMUs, the dead BLSP2 block
+(uart2 + i2c1/i2c6), and the GPU stack (gpu + adreno_smmu, which NOC-aborts on
+deferred re-probe). Next crash: a silent NOC-abort reset at an **I2C device
+probe on BLSP1** (`bq27541`/`1-0055` area). More peripherals likely follow —
+possibly a systemic power-domain (GDSC/rpmpd) issue worth investigating vs.
+disabling each in turn.
 
 ## Method
 
@@ -256,11 +259,26 @@ just disable the ones we don't need; each fix reveals the next.
   access NOC-aborts); BLSP1 I2C (7577000/757a000) is fine. Disabled the enabled
   BLSP2 I2C buses (`blsp2_i2c1`, `blsp2_i2c6`) — **VERIFIED: boot now clears all
   NOC aborts, no reset, reaches ~2.97 s.**
-- **New failure mode: a hang, not a NOC abort.** After the BLSP1 I2C controllers
-  probe, the kernel goes silent at ~2.97 s with **no reset** (34 KB of log after
-  the jump, then nothing). That's a probe *hang* — likely an I2C device (touch/
-  sensor) waiting on a regulator/reset that never arrives — distinct from the
-  register-access NOC aborts handled above.
+- **`initcall_debug` is the key tool here.** The apparent "2.97 s hang" was
+  *not* a hang — with `initcall_debug` on the cmdline the kernel is seen running
+  deep into `deferred_probe` (~13 s), doing slow *silent* probes (clock-
+  controller 109 ms, serial 48 ms, PHYs deferring `-517`) with no console output
+  in between. The last completed `probe of X returned` before the reset points
+  at the crasher; the next probe NOC-aborts before it can print.
+- **GPU stack.** At ~13 s `adreno_smmu` (b40000) is re-probed during
+  `deferred_probe` (GPU consumer pulls it in) and NOC-aborts — even though it
+  probed fine on the first pass. Disable `&gpu` + `&adreno_smmu` (graphics
+  unused for stage-1).
+- **Next: an I2C *device* on BLSP1.** After that, a silent NOC-abort reset right
+  after `bq27541`/`1-0055` (fuel gauge, ~0x55) on a BLSP1 bus. An aggressive
+  trim (disabling display/camera/video/modem/pcie/audio/usb/ufs too) did **not**
+  get past it — so the crasher is on the kept BLSP1 i2c path, not the heavy
+  peripherals.
+- **Hypothesis worth testing:** the sheer number of peripherals that NOC-abort
+  suggests a *systemic* power issue — GDSC/rpmpd power-domains the bootloader
+  left off and the mainline power-domain drivers aren't bringing up on marlin —
+  rather than N independent faults. Fixing that could clear many at once; vs.
+  the current disable-each-in-turn approach.
 
 ### Ops note — recovering a wedged phone
 
@@ -272,11 +290,13 @@ phone takes ~30 s+ to reset to Android, so wait for adb/fastboot before the next
 
 ### Remaining next steps
 
-1. **Chase the ~2.97 s hang** — an I2C device probe on BLSP1 that stalls (no
-   reset). Identify the device (touch/sensor per hardware.md) and disable it or
-   give it its regulator/reset; then continue.
-2. **Trim oneplus-specifics** — replace borrowed `msm8996-oneplus-common` with a
-   marlin-specific node set (keep regulators/console; drop panel/touch/sound).
-3. **Defeat `skip_initramfs`** (recovery-mode boot) — so the kernel runs
-   Sarala's `/init` instead of mounting stock Android's dm-verity system, to
-   reach the stage-1 shell.
+1. **Get past the BLSP1 I2C-device reset** (`bq27541`/`1-0055`), using
+   `initcall_debug` to name each next crasher; keep disabling BLSP1 i2c devices/
+   the next deferred driver until the boot clears them.
+2. **Or investigate the systemic power-domain angle** — check whether the
+   GDSC/rpmpd power domains are being brought up; a fix there may clear the
+   peripheral NOC aborts wholesale instead of one-by-one.
+3. **Trim oneplus-specifics** — once booting, replace borrowed
+   `msm8996-oneplus-common` with a marlin-specific node set.
+4. **Defeat `skip_initramfs`** — so the kernel runs Sarala's `/init` instead of
+   mounting stock Android's dm-verity system, to reach the stage-1 shell.

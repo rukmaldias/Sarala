@@ -12,9 +12,10 @@
  * RESULT (verified on hardware 2026-07-26): the kernel boots and kernel log
  * appears on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) — the stage-1
  * "kernel log over serial" signal, on real marlin. Iterating past NOC aborts
- * from unpowered peripherals (SMMUs + the whole BLSP2 block): VERIFIED past all
- * of them to ~2.97 s with no more resets. It then HANGS (no reset) at an I2C
- * device probe on BLSP1 — the next thing to chase. See first-boot.md.
+ * from unpowered peripherals (SMMUs, BLSP2 block, GPU). With `initcall_debug`
+ * the boot is seen running deep into deferred_probe (~13 s, console up). Next
+ * crash is at an I2C *device* probe on BLSP1 (bq27541/`1-0055` area). Chasing
+ * that (and likely more peripherals) is ongoing — see first-boot.md.
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
@@ -69,3 +70,11 @@
 &venus_smmu    { status = "disabled"; };
 &vfe_smmu      { status = "disabled"; };
 &lpass_q6_smmu { status = "disabled"; };
+
+/*
+ * GPU stack: adreno_smmu probes fine initially but NOC-aborts when re-probed
+ * during deferred_probe (~13 s) as the GPU consumer pulls it in. Graphics is
+ * unused for stage-1, so disable both.
+ */
+&gpu         { status = "disabled"; };
+&adreno_smmu { status = "disabled"; };

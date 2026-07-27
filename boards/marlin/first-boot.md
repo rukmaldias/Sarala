@@ -620,15 +620,23 @@ coordination on this port).
 
 ### Remaining next steps
 
-1. **Fix msm_serial tty TX** (the interactive-shell blocker). Black-box/userspace
-   testing is exhausted — the contention test (console OFF ttyMSM0) was
-   inconclusive because the tty is then the *only* physical channel, so there's
-   no way to observe whether init ran. **Next: instrument `msm_serial.c`
-   directly** — `printk` from inside `msm_handle_tx_pio` reaches the *working*
-   console path, so it can trace the actual TX writes: how many bytes are pulled
-   from the fifo, the `MSM_UART_SR`/`TX_READY` state, and the `NCF_TX` value, on
-   the tty path vs the console path. Also worth: diff against a known-good
-   msm8996 board (oneplus3) tty-TX trace. Goal: readable/typable busybox shell.
+1. **Fix msm_serial tty TX** (the interactive-shell blocker). In-driver
+   `printk_deferred` traces in `msm_start_tx`/`msm_handle_tx`/`msm_handle_tx_pio`
+   showed the tty PIO path **executes correctly**: `handle_tx` picks PIO
+   (`chan=0`), `tx_pio` programs `NCF_TX` = byte count and writes every byte to
+   `UARTDM_TF` (`tf_pointer` reaches `tx_count`), `SR=0x204` (`TX_READY` set).
+   The register sequence is *identical* to the working `__msm_console_write`
+   (`msm_reset_dm_count`→NCF→`iowrite32_rep(tf,…)`; `msm_stop_tx` only masks the
+   IRQ). Yet across *many* interleaved writes on the same port, **every console
+   printk transmitted and every tty write did not** — so it is not simple NCF
+   clobbering/contention, and not the register ops. Remaining candidates: a
+   port-state / flow-control (CTS) difference on the tty TX path vs the polled
+   console path, or a UARTDM `NCF`/xmitr interaction. **Decisive next step: boot
+   a known-good mainline msm8996 board image (oneplus3) and trace its tty TX to
+   diff against ours** — black-box and single-board driver tracing are exhausted.
+   (Observability caveat: the console shares the one physical UART, so any test
+   that silences/moves the console also blinds us; keep `earlycon`+`console=
+   ttyMSM0` and trace via the console path.) Goal: readable/typable busybox shell.
 2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
    flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.

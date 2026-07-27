@@ -25,19 +25,20 @@
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
  * live console; a marlin-specific node set replaces it later.
  *
- * CONSOLE (subtle — see first-boot.md):
- *  - blsp2_uart2 (0x75b0000, oneplus's console) is UNUSED on marlin; its driver
- *    probe NOC-aborts, so it is disabled below.
- *  - but `earlycon` is load-bearing (without it the kernel hangs before the
- *    ttyMSM0 driver comes up at ~2.7 s), and it can only bind via the DT
- *    stdout-path to a "qcom,msm-uartdm" node. of_setup_earlycon uses the node's
- *    reg even when the node is `disabled`, while the platform driver skips it —
- *    so keeping stdout-path = serial1 (blsp2) gives earlycon on 0x75b0000
- *    WITHOUT the driver probe crash. (earlycon on blsp1/jack faults early.)
- *  - visible output is ttyMSM0 (0x7570000, jack), which the driver brings up
- *    with clocks at ~2.7 s.
- *  Boot with cmdline: `earlycon console=ttyMSM0,115200n8` (stdout-path stays
- *  serial1, inherited from oneplus-common).
+ * CONSOLE (corrected 2026-07-27 — the jack is BLSP2, not BLSP1; see first-boot.md):
+ *  - The 3.5mm jack debug UART is blsp2_uart2 (0x75b0000). What is visible on the
+ *    jack is the `earlycon` (msm_serial_dm0) bound via stdout-path = serial1
+ *    (blsp2), inherited from oneplus-common; `keep_bootcon` keeps it alive so we
+ *    see the whole boot. Proven by tracing port->mapbase (console writes go to
+ *    0x75b0000; ttyMSM0 tty writes go to 0x7570000 and never reach the jack).
+ *  - blsp2_uart2's FULL driver probe still NOC-aborts, so it stays disabled and
+ *    we cannot yet expose it as a runtime tty. The earlycon only pokes TX, which
+ *    works, so the block is reachable — fixing the probe is the open task.
+ *  - blsp1_uart2 (0x7570000, ttyMSM0) is enabled as the runtime console/tty, but
+ *    it is NOT the jack, so its output is invisible. TODO: once blsp2_uart2
+ *    probes, move the runtime console + shell tty onto it (the real jack).
+ *  Boot with cmdline: `earlycon console=ttyMSM0,115200n8 clk_ignore_unused`
+ *  (stdout-path stays serial1, inherited from oneplus-common).
  */
 /dts-v1/;
 

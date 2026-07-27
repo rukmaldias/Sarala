@@ -20,7 +20,14 @@ Confirmed working on marlin by jpuderer (bootloader *and* kernel output).
 | Port | 3.5mm TRRS headphone jack |
 | Level | **3.3V** (not 1.8V — that is the Pixel 2) |
 | Line | 115200 8N1, no flow control |
-| UART | `blsp1_uart2` @ `0x7570000` (mainline `ttyMSM0`; downstream `ttyHSL0`) |
+| UART | **`blsp2_uart2` @ `0x75b0000`** (the console/earlycon `msm_serial_dm0`) |
+
+> **Correction (2026-07-27):** the debug UART on the jack is **`blsp2_uart2`
+> @ `0x75b0000`**, *not* `blsp1_uart2` @ `0x7570000` as originally recorded.
+> Proven during bring-up by tracing `port->mapbase`: the console output that
+> reaches the jack is written to `0x75b0000` (blsp2), while writes to
+> `ttyMSM0`/blsp1 (`0x7570000`) never appear. The initial `ttyHSL0 → 0x7570000`
+> mapping was an incorrect inference. See [`first-boot.md`](first-boot.md).
 
 ## Enabling it
 

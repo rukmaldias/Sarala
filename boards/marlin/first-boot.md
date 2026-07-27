@@ -620,23 +620,45 @@ coordination on this port).
 
 ### Remaining next steps
 
-1. **Fix msm_serial tty TX** (the interactive-shell blocker). In-driver
-   `printk_deferred` traces in `msm_start_tx`/`msm_handle_tx`/`msm_handle_tx_pio`
-   showed the tty PIO path **executes correctly**: `handle_tx` picks PIO
-   (`chan=0`), `tx_pio` programs `NCF_TX` = byte count and writes every byte to
-   `UARTDM_TF` (`tf_pointer` reaches `tx_count`), `SR=0x204` (`TX_READY` set).
-   The register sequence is *identical* to the working `__msm_console_write`
-   (`msm_reset_dm_count`→NCF→`iowrite32_rep(tf,…)`; `msm_stop_tx` only masks the
-   IRQ). Yet across *many* interleaved writes on the same port, **every console
-   printk transmitted and every tty write did not** — so it is not simple NCF
-   clobbering/contention, and not the register ops. Remaining candidates: a
-   port-state / flow-control (CTS) difference on the tty TX path vs the polled
-   console path, or a UARTDM `NCF`/xmitr interaction. **Decisive next step: boot
-   a known-good mainline msm8996 board image (oneplus3) and trace its tty TX to
-   diff against ours** — black-box and single-board driver tracing are exhausted.
-   (Observability caveat: the console shares the one physical UART, so any test
-   that silences/moves the console also blinds us; keep `earlycon`+`console=
-   ttyMSM0` and trace via the console path.) Goal: readable/typable busybox shell.
+### BREAKTHROUGH — the jack is BLSP2, not BLSP1 (we had the UART backwards)
+
+In-driver `printk_deferred` traces (in `__msm_console_write` and
+`msm_handle_tx_pio`) printing `port->mapbase` settled it:
+
+```
+CON  mapbase=0x075b0000 (BLSP2)  irq=0   <- the console-write path we SEE
+TTY  mapbase=0x07570000 (BLSP1)  irq=27  <- ttyMSM0, where the tty writes go
+```
+
+They are **different physical UARTs**. The console output that reaches the 3.5mm
+jack is written to **BLSP2 (0x75b0000)** — that is the **earlycon**
+(`msm_serial_dm0`, from oneplus-common's `stdout-path = serial1`), kept alive by
+`keep_bootcon`. The runtime console *and* the tty (ttyMSM0) are on **BLSP1
+(0x7570000)** — a different UART that is **not wired to the jack** — which is
+exactly why every tty write executed perfectly (NCF/TF all correct) yet was
+invisible, while the earlycon was not. It also re-explains the earlier
+"drop `keep_bootcon` → silence": that removed the blsp2 earlycon, our only
+window; the blsp1 runtime console was never visible.
+
+**So `serial-console.md`'s "jack = blsp1_uart2 / ttyHSL0 = 0x7570000" was wrong:
+the marlin debug UART on the jack is `blsp2_uart2` @ 0x75b0000.** We spent the
+bring-up driving the wrong UART for the runtime console/tty; the blsp2 earlycon
+carried us by luck.
+
+**New blocker for an interactive shell:** the full `blsp2_uart2` msm_serial probe
+NOC-aborts — enabling it resets right after `msm_serial 75b0000.serial: detected
+port #1` (the earlycon only pokes TX, but the full probe touches clocks/regs that
+fault). The earlycon proves the block is *reachable*, so this is a
+clock/power/probe issue to crack.
+
+### Remaining next steps
+
+1. **Get a working `blsp2_uart2` tty on the jack.** Fix the full-probe NOC-abort
+   (likely a BLSP2 clock/power detail — `GCC_BLSP2_UART2_APPS_CLK` /
+   `GCC_BLSP2_AHB_CLK`; the block is reachable since the earlycon works). Then
+   move the runtime console + shell tty to blsp2 (`console=` on the blsp2 line,
+   drop the blsp1 console/tty, keep the console on the actual jack). That yields
+   the readable/typable stage-1 shell. Goal: readable/typable busybox shell.
 2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
    flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.

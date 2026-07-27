@@ -373,16 +373,60 @@ hardware reset truncates it.** Prime suspect: the ramdisk `/dev` is **empty**
 bails. This is the first *userspace* problem — the kernel is no longer the
 blocker.
 
+### Userspace-entry reset — deeper look (2026-07-27, cont.)
+
+Chased the `/init` reset. It is **not** simply "`/dev` empty":
+
+- **Shipped `/dev/console` + `/dev/null` in the initramfs** (fixed
+  `scripts/mkinitramfs.sh` to `mknod` them under `fakeroot`; verified they land
+  in the cpio as `c 5 1` / `c 1 3`). The reset persisted, still right at
+  `execve(/init)`.
+- **Instrumented PID 1** with raw `write(2, …)` markers at entry / after mount /
+  after `console::attach` / after `signal::block` / after spawn. **Not one
+  marker printed** — not even the first-instruction "A enter", despite the
+  kernel wiring the console (no "unable to open an initial console" warning).
+- The aboot post-reset dump is a **peripheral-NOC** (`PNOC ERROR ERRLOG1 =
+  0x0a801002`, sibling of the i2c fault's `0x0a801204`), **not** the CPU-fault
+  signature a Rust panic would leave. So this is a hardware/interconnect access,
+  not (only) an init crash.
+- Timing tracks `execve`, not wall-clock: init reached at 2.28 s / 2.47 s / 4.77 s
+  across builds (the 4.77 s one just prints more to slow 115200 serial), and the
+  reset always lands ~immediately after the kernel finishes dumping init's argv/
+  envp — i.e. **at the moment userspace is entered.**
+- aboot appends `ro root=/dev/dm-0 dm="system none ro,0 1 android-verity
+  /dev/sda34"`. `rdinit=/init` should make that inert, but it is a live suspect:
+  if anything touches **UFS** (which we disabled, `&ufshc`) or sets up dm-verity
+  at userspace entry, that access would PNOC-abort.
+
+**Two hypotheses to resolve next:**
+1. **UFS/dm-verity access at exec.** Test: re-enable `&ufshc`/`&ufsphy` (real
+   marlin hardware, may probe fine) and/or neutralise the appended
+   `root=/dev/dm-0`; if the exec-time NOC clears, it was storage/dm.
+2. **Init crashes before its first instruction** (musl/loader entry), and the
+   kernel's panic-reboot path is what NOCs. Test: run **busybox as PID 1** (image
+   staged at VM `/tmp/initramfs-bbinit.cpio.gz`, `/init` = busybox, big enough to
+   dodge the aboot small-ramdisk quirk below) — if busybox also resets at exec →
+   not Rust-specific; if it survives → the Rust static binary is the problem.
+
+Blocked mid-test: the **build VM went unresponsive** again (SSH banner timeout,
+as in the earlier session) — restart with `scripts/vm.sh run`, then pull
+`/tmp/initramfs-bbinit.cpio.gz` and run hypothesis #2.
+
+Aside — **aboot small-ramdisk quirk:** a boot.img whose only change was a
+*smaller* ramdisk (busybox-script `/init`, ~1.17 MB vs ~1.36 MB) refused to jump
+— serial stayed in `fastboot: processing commands` with the kernel never
+starting, though kernel bytes/addresses were byte-identical to a bootable image.
+Keep test ramdisks in the same size class as a known-good one until understood.
+
 ### Remaining next steps
 
-1. **Get Sarala `/init` to survive and log.** Give it a console: mount
-   `devtmpfs` on `/dev` early (or ship a static `/dev/console` node in the
-   initramfs, and/or `CONFIG_DEVTMPFS_MOUNT`), and make `console.rs` tolerate a
-   missing console instead of exiting. First goal: any output from PID1 over the
-   jack. Then the stage-1 shell (busybox `sh`).
-2. **Trim oneplus-specifics further** — the peripheral/i2c/DVFS trims above are
-   the start; continue replacing borrowed `msm8996-oneplus-common` with a
-   marlin-specific node set now that we know which nodes matter.
-3. **(deferred) `skip_initramfs` on a *flashed* boot** — only relevant if/when we
+1. **Resolve the userspace-entry NOC** via the two hypotheses above (UFS/dm
+   first — it is the most specific to what aboot appends).
+2. **Then get Sarala `/init` to log and survive** — with a console it should
+   reach the loop; harden `console.rs`/`mount.rs` against a missing console.
+   First goal: any PID 1 output over the jack, then the stage-1 busybox shell.
+3. **Trim oneplus-specifics further** — continue replacing borrowed
+   `msm8996-oneplus-common` with a marlin-specific node set.
+4. **(deferred) `skip_initramfs` on a *flashed* boot** — only relevant if/when we
    flash boot instead of `fastboot boot`; the transient path already runs
    `rdinit=/init`.

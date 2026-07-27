@@ -594,13 +594,39 @@ transmitter/UARTDM NCF state, whereas the console path explicitly does
 `RESET_TX`+`TX_ENABLE` and programs `NCF_TX`. PID 1 output is therefore still
 visible only via `/dev/kmsg`.
 
+### msm_serial tty-TX dig — IRQ fires, write succeeds, no physical TX
+
+Instrumented PID 1 to open ttyMSM0, set 115200 8N1, write, and snapshot
+`/proc/interrupts` around it. Findings:
+
+- `open` succeeds, `isatty=1`, termios already B115200, `write()` returns the
+  full count, `tcdrain` returns.
+- **The UART IRQ (27) fires**: count `0 → 1` across the write. So `msm_start_tx`
+  set `TXLEV`, the interrupt was delivered, and `msm_handle_tx` ran — it is *not*
+  an IRQ-delivery problem, and the transmitter is enabled (`msm_set_baud_rate`
+  does `TX_ENABLE|RX_ENABLE`).
+- **Yet the bytes never appear on the jack** (0 occurrences of the test string in
+  the raw capture), in *both* DMA and PIO modes — while kernel printk on the same
+  port transmits fine.
+
+So `msm_handle_tx` runs but the UARTDM transfer doesn't complete physically. The
+driver-level differences between the working console path and the tty path:
+`__msm_console_write` **spins** on `TX_READY` before each word, whereas
+`msm_handle_tx_pio` **breaks** if `TX_READY` is momentarily clear; and both
+writers reprogram the single `NCF_TX` register. Qualcomm UARTDM *does* work as a
+console+tty on other mainline boards, so our heavily-stripped config differs in
+some way not yet found (candidate: blsp1 BAM/PIO state, or console/tty `NCF_TX`
+coordination on this port).
+
 ### Remaining next steps
 
-1. **Fix msm_serial tty TX on the UARTDM console port** — the interactive-shell
-   blocker. Investigate `msm_start_tx` / `msm_handle_tx` / `msm_startup`: is the
-   transmitter enabled and `NCF_TX` programmed on the tty path when the port is
-   also the console? Likely a small driver fix or a startup TX-enable. Goal: the
-   busybox shell readable/typable over the jack.
+1. **Fix msm_serial tty TX** (the interactive-shell blocker). Concrete probes:
+   (a) confirm/deny console↔tty contention by moving the kernel console OFF
+   ttyMSM0 (e.g. `console=` elsewhere) so the tty owns the port — if a tty write
+   then transmits, it's coordination; (b) compare `msm_handle_tx_pio` behavior
+   against a known-good msm8996 mainline board (oneplus3) to spot the deviation;
+   (c) try a driver tweak making `msm_handle_tx_pio` wait for `TX_READY` like the
+   console. Goal: readable/typable busybox shell over the jack.
 2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
    flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.

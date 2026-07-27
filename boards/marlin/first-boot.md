@@ -620,13 +620,15 @@ coordination on this port).
 
 ### Remaining next steps
 
-1. **Fix msm_serial tty TX** (the interactive-shell blocker). Concrete probes:
-   (a) confirm/deny console↔tty contention by moving the kernel console OFF
-   ttyMSM0 (e.g. `console=` elsewhere) so the tty owns the port — if a tty write
-   then transmits, it's coordination; (b) compare `msm_handle_tx_pio` behavior
-   against a known-good msm8996 mainline board (oneplus3) to spot the deviation;
-   (c) try a driver tweak making `msm_handle_tx_pio` wait for `TX_READY` like the
-   console. Goal: readable/typable busybox shell over the jack.
+1. **Fix msm_serial tty TX** (the interactive-shell blocker). Black-box/userspace
+   testing is exhausted — the contention test (console OFF ttyMSM0) was
+   inconclusive because the tty is then the *only* physical channel, so there's
+   no way to observe whether init ran. **Next: instrument `msm_serial.c`
+   directly** — `printk` from inside `msm_handle_tx_pio` reaches the *working*
+   console path, so it can trace the actual TX writes: how many bytes are pulled
+   from the fifo, the `MSM_UART_SR`/`TX_READY` state, and the `NCF_TX` value, on
+   the tty path vs the console path. Also worth: diff against a known-good
+   msm8996 board (oneplus3) tty-TX trace. Goal: readable/typable busybox shell.
 2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
    flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.

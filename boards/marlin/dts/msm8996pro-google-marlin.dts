@@ -69,6 +69,33 @@
 &blsp2_dma   { status = "disabled"; };
 
 /*
+ * blsp1_uart2 is marlin's DEBUG CONSOLE (the 3.5mm jack), not oneplus's
+ * Bluetooth UART. oneplus-common attaches a qca6174 `bluetooth` serdev child,
+ * which makes the serial core register the port as a *serdev controller*
+ * (serial0) instead of a plain tty — so ttyMSM0 gets no /sys/class/tty entry,
+ * no /dev node, and open() returns ENXIO: the kernel console (printk) works but
+ * userspace (PID 1, the shell) has no usable serial tty. Drop the serdev child
+ * (and the BT-only rtscts/label) so the port registers as a normal tty ttyMSM0.
+ */
+&blsp1_uart2 {
+	/delete-property/ label;
+	/delete-property/ uart-has-rtscts;
+
+	/*
+	 * Use PIO, not BAM DMA, for the console tty. msm_serial routes tty TX/RX
+	 * through blsp1_dma (dmas = <&blsp1_dma 2 3>), but that DMA path produces
+	 * no physical output on marlin (a tty write succeeds and tcdrain returns,
+	 * yet nothing reaches the jack — while the console's polled writes do).
+	 * Dropping the dmas makes ttyMSM0 transmit in PIO, matching the console.
+	 * (delete-property must precede delete-node per dtc.)
+	 */
+	/delete-property/ dmas;
+	/delete-property/ dma-names;
+
+	/delete-node/ bluetooth;
+};
+
+/*
  * Multimedia (MMSS) and audio (LPASS) IOMMUs: register access NOC-aborts
  * because those power domains aren't up, and none are needed for a stage-1
  * serial boot. adreno_smmu (GPU) probes fine and is left enabled. VERIFIED:

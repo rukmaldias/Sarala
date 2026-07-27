@@ -567,19 +567,45 @@ nowhere to go, while kernel printk still works. This is a serial-layer issue
 (the msm_serial / `serial_base_bus` "port" device isn't creating the ttyMSM0 tty
 class device for the console port on this kernel), not a VT or DTS problem.
 
+### ttyMSM0 is now a real tty — serdev child was the cause (2026-07-27)
+
+Cracked the "no tty class device" mystery. The `serial serial0: tty port ttyMSM0
+registered` message came from `serdev-ttyport.c` — the port was claimed as a
+**serdev controller**, not a tty, because oneplus-common attaches a
+`bluetooth { compatible = "qcom,qca6174-bt"; }` **serdev child** to
+`blsp1_uart2`. On marlin that UART is the debug console, not a BT UART. Deleting
+the child (dts: `&blsp1_uart2 { /delete-node/ bluetooth; … }`) makes the serial
+core register a normal tty — verified: `/dev/ttyMSM0` now exists, `isatty()=1`,
+and `open()` succeeds (no more ENXIO). Also dropped the BT-only `label`/
+`uart-has-rtscts`, and the `dmas` (use PIO, not BAM, for the console tty).
+
+Confirmed with the `CONFIG_VT=n` kernel that PID 1 (kmsg-instrumented) opens
+ttyMSM0, sets 115200 8N1 (it was already B115200), and `write()` returns the
+full byte count.
+
+### Final open issue — msm_serial tty TX doesn't physically transmit
+
+A `write()` to ttyMSM0 *succeeds* (returns the byte count, `tcdrain` returns) but
+**nothing appears on the jack** — not even garbage — in **both** DMA and PIO
+modes, while the kernel console (polled `__msm_console_write` on the same port)
+transmits fine. So it's specific to the msm_serial **tty** TX path on this UARTDM
+console port: `msm_start_tx` only sets the `TXLEV` IMR bit and relies on the
+transmitter/UARTDM NCF state, whereas the console path explicitly does
+`RESET_TX`+`TX_ENABLE` and programs `NCF_TX`. PID 1 output is therefore still
+visible only via `/dev/kmsg`.
+
 ### Remaining next steps
 
-1. **Get ttyMSM0 registered as a usable tty** (the interactive-console blocker).
-   Investigate why the msm_serial console port has no `/sys/class/tty/ttyMSM0` /
-   openable tty in this kernel — the `serial_base_bus` ctrl/port probe, or a
-   missing SERIAL/TTY config. Cross-check a known-good msm8996 mainline board.
-   Until then, PID 1 output is visible only via `/dev/kmsg`.
-2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims and pets it
-   (`CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y`, `OPEN_TIMEOUT=0` already set) — stops
-   the `NON_SECURE_WDT` reset (~15 s) so PID 1 runs indefinitely.
+1. **Fix msm_serial tty TX on the UARTDM console port** — the interactive-shell
+   blocker. Investigate `msm_start_tx` / `msm_handle_tx` / `msm_startup`: is the
+   transmitter enabled and `NCF_TX` programmed on the tty path when the port is
+   also the console? Likely a small driver fix or a startup TX-enable. Goal: the
+   busybox shell readable/typable over the jack.
+2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
+   flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.
 
-(Kernel built with `CONFIG_VT=n` on the VM; the config is a VM build artifact,
+(Kernel built with `CONFIG_VT=n` on the VM; the .config is a VM build artifact,
 not tracked in this repo.)
 2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
    (essential, so can't just disable — but regulator/clock requests to RPM are an

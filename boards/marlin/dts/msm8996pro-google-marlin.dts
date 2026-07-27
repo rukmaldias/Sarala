@@ -12,10 +12,13 @@
  * RESULT (verified on hardware 2026-07-26): the kernel boots and kernel log
  * appears on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) — the stage-1
  * "kernel log over serial" signal, on real marlin. Iterating past NOC aborts
- * from unpowered peripherals (SMMUs, BLSP2 block, GPU). With `initcall_debug`
- * the boot is seen running deep into deferred_probe (~13 s, console up). Next
- * crash is at an I2C *device* probe on BLSP1 (bq27541/`1-0055` area). Chasing
- * that (and likely more peripherals) is ongoing — see first-boot.md.
+ * from unpowered peripherals (SMMUs, BLSP2 block, GPU, SMP2P IPC to the DSPs).
+ * Boot cmdline should include `clk_ignore_unused` (else clk_disable_unused
+ * WARNs on `fd_ahb_clk`, a CAMSS clock under a powered-off domain).
+ * REMAINING BLOCKER: a residual *async* NOC_ERROR/TZ-abort reset around the
+ * i2c/cpufreq stage (~2 s) — the crash point moves with logging, so it's an
+ * IRQ/callback from a still-running remote or an unpowered block, not yet
+ * pinned. See first-boot.md.
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
@@ -78,3 +81,13 @@
  */
 &gpu         { status = "disabled"; };
 &adreno_smmu { status = "disabled"; };
+
+/*
+ * SMP2P IPC to the DSPs (ADSP/MPSS/SLPI). Those remotes are still running from
+ * aboot and send SMP2P interrupts; our handler NOC-aborts (async — the crash
+ * point moved with logging). We don't use the DSPs, so disable the channels.
+ * (No top-level labels in the SoC dtsi, so reference by path.)
+ */
+&{/smp2p-adsp} { status = "disabled"; };
+&{/smp2p-mpss} { status = "disabled"; };
+&{/smp2p-slpi} { status = "disabled"; };

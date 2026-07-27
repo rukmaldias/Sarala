@@ -7,14 +7,15 @@ transient and Android stays intact. Companion to [`boot-image.md`](boot-image.md
 read).
 
 **Status:** **Kernel boots with a live serial console, deep into
-`deferred_probe` (~13 s).** `initcall_debug` showed the earlier "2.97 s hang"
-was actually slow *silent* deferred-probe work — the kernel is running much
-further than it looked. Disabled so far: MMSS/LPASS IOMMUs, the dead BLSP2 block
-(uart2 + i2c1/i2c6), and the GPU stack (gpu + adreno_smmu, which NOC-aborts on
-deferred re-probe). Next crash: a silent NOC-abort reset at an **I2C device
-probe on BLSP1** (`bq27541`/`1-0055` area). More peripherals likely follow —
-possibly a systemic power-domain (GDSC/rpmpd) issue worth investigating vs.
-disabling each in turn.
+`deferred_probe`.** Disabled so far: MMSS/LPASS IOMMUs, the dead BLSP2 block,
+the GPU stack, and the **SMP2P IPC to the DSPs** (a real async-fault source).
+Also needs `clk_ignore_unused` on the cmdline (else `clk_disable_unused` WARNs
+on `fd_ahb_clk`, a CAMSS clock under a powered-off domain). **Remaining
+blocker:** a residual **async `NOC_ERROR`/TZ-abort** reset around the
+i2c/cpufreq stage — the crash point moves with logging verbosity, so it's an
+IRQ/callback from a still-running remote or an unpowered block, not yet pinned.
+The power framework itself (rpmpd/genpd/regulators/icc) is up, so it's not a
+blanket power-domain failure.
 
 ## Method
 
@@ -297,15 +298,42 @@ enumerating) and not auto-recovering. Force a reboot: **hold Power + Volume-Down
 phone takes ~30 s+ to reset to Android, so wait for adb/fastboot before the next
 `fastboot boot` (racing it fails with "no devices").
 
+## SMP2P async fault + clk_disable_unused + residual async NOC (2026-07-27)
+
+Investigation results (power framework is up — `rpmpd`/`genpd`/`rpm_smd`
+regulators/`icc_smd_rpm` all probe fine — so not a blanket power-domain fail):
+
+- **Named the async source via `dyndbg`.** `dyndbg="file drivers/base/dd.c +p"`
+  logs each probe *before* it runs. The last one before the reset was
+  **`smp2p-slpi`** (and the crash point moved earlier as logging increased —
+  confirming async). SMP2P is the shared-memory IPC to the DSPs (ADSP/MPSS/SLPI),
+  which are **still running from aboot** and send SMP2P interrupts; our handler
+  NOC-aborts. Disabled the three `smp2p-*` channels (by path — no labels).
+- **`clk_disable_unused` WARN.** With SMP2P off, the next issue surfaced:
+  `clk_disable_unused` → `fd_ahb_clk status stuck at 'on'` (WARN, clk-branch.c),
+  a CAMSS clock whose power domain is off. Worked around with `clk_ignore_unused`
+  on the cmdline.
+- **Residual async NOC fault remains.** Even with SMP2P off + `clk_ignore_unused`,
+  a silent `NOC_ERROR`/`RPM:TZ ABORT!` reset still hits around the i2c/cpufreq
+  stage, and its point still shifts with logging — a *second* async source
+  (another remote IRQ / glink / cpufreq-apcs / interconnect QoS). TZ resets
+  instantly on the NOC error, so there's no kernel backtrace to read.
+
+### Ops note — recovering a wedged phone
+
+Repeated crash-boots can leave the phone off the USB bus (no adb/fastboot, not
+enumerating) and not auto-recovering. Force a reboot: **hold Power + Volume-Down
+~10–15 s.** It returns to Android (or bootloader). Also: after a crash-boot the
+phone takes ~30 s+ to reset to Android, so wait for adb/fastboot before the next
+`fastboot boot` (racing it fails with "no devices").
+
 ### Remaining next steps
 
-1. **Get past the BLSP1 I2C-device reset** (`bq27541`/`1-0055`), using
-   `initcall_debug` to name each next crasher; keep disabling BLSP1 i2c devices/
-   the next deferred driver until the boot clears them.
-2. **Or investigate the systemic power-domain angle** — check whether the
-   GDSC/rpmpd power domains are being brought up; a fix there may clear the
-   peripheral NOC aborts wholesale instead of one-by-one.
-3. **Trim oneplus-specifics** — once booting, replace borrowed
+1. **Pin the residual async NOC source.** Candidates: another running-remote IRQ
+   (glink/qrtr/smem-state), cpufreq touching the APCS/CBF CPU clock, or the
+   hardware interconnect (qnoc) QoS programming. Bisect by disabling each; use
+   `dyndbg` (dd.c) to see the probe boundary the reset lands near.
+2. **Trim oneplus-specifics** — once booting, replace borrowed
    `msm8996-oneplus-common` with a marlin-specific node set.
-4. **Defeat `skip_initramfs`** — so the kernel runs Sarala's `/init` instead of
+3. **Defeat `skip_initramfs`** — so the kernel runs Sarala's `/init` instead of
    mounting stock Android's dm-verity system, to reach the stage-1 shell.

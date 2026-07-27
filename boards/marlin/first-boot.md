@@ -418,48 +418,44 @@ Aside — **aboot small-ramdisk quirk:** a boot.img whose only change was a
 starting, though kernel bytes/addresses were byte-identical to a bootable image.
 Keep test ramdisks in the same size class as a known-good one until understood.
 
-### The "userspace-entry NOC" was the blsp2 earlycon — fixed (2026-07-27, cont.)
+### More elimination on the userspace-entry NOC (2026-07-27, cont.)
 
-Resolved. The reset was **not** userspace at all — it was the **earlycon on the
-dead blsp2 block**:
+Narrowed it further, and corrected a wrong turn:
 
-- **Busybox as PID 1 reset identically** at execve (staged a full-rootfs image
-  with `/init` = busybox to dodge the aboot small-ramdisk quirk). So it was never
-  Sarala's Rust init — any userspace tripped it.
-- Ruled out, one boot each: `/dev/console` (shipped it), genpd
+- **busybox as PID 1 resets identically** at execve (full-rootfs image, `/init` =
+  busybox, sized to dodge the small-ramdisk quirk). So it is not Sarala's Rust
+  init — any userspace trips it.
+- Ruled out, one boot each: `/dev/console` (shipped it, no change), genpd
   (`pd_ignore_unused` → "Not disabling unused power domains", no change), and
-  UFS/dm (re-enabling `&ufshc` just deferred on `vdd-hba -517`; reset unchanged).
-- **`keep_bootcon` was the tell.** Dropping it, the boot stopped dead at
-  `printk: legacy bootconsole [msm_serial_dm0] disabled` — i.e. tearing down the
-  blsp2 earlycon wedged it. oneplus-common's `stdout-path = serial1` puts
-  earlycon on blsp2 (0x75b0000); that block is effectively dead on marlin, and
-  the console teardown/handoff at kernel->userspace NOC-aborts (PNOC), which is
-  why it always landed at execve regardless of the init binary.
-- **Fix:** override `stdout-path` to **serial0 = blsp1_uart2** (0x7570000, the
-  jack) so earlycon and console share the one live UART; blsp2 is never touched.
+  UFS/dm (re-enabling `&ufshc` merely *defers* on `vdd-hba get failed err=-517`;
+  reset unchanged). So the fault is not the init binary, not devtmpfs, not
+  power-domains, not storage.
 
-**RESULT: the reset at userspace entry is gone.** With earlycon on blsp1 the boot
-runs well past execve — observed to **~8 s+ of kernel time**, multi-CPU, into
-late driver init (qcrypto/BAM). It still resets somewhere after that (the phone
-fell back to stock Android off-camera), but far past the old wall and now with a
-live console the whole way — the next fault will have a real backtrace.
+**Correction — blsp1 earlycon is NOT the fix (reverted).** I briefly moved
+earlycon+console to blsp1 (`stdout-path = serial0`) and saw an "8 s+ boot" that
+looked like a breakthrough — but that was **stock Android 3.18** (`ttyHSL0`,
+`cnss`, `Qualcomm Crypto 5.3`), not our kernel. With earlycon on blsp1 our kernel
+emitted **nothing** (`ttyMSM0 at MMIO`/`Run /init` absent) and reset immediately;
+aboot then fell back to the flashed stock image, which I misread as progress.
+Lesson: the old "earlycon on blsp1 faults early" note still holds — keep earlycon
+on blsp2 via `stdout-path = serial1`. Always confirm a capture is *our* kernel
+(mainline version string, `console=ttyMSM0`, no `cnss`/`ttyHSL0`) before drawing
+conclusions.
+
+**Actual state:** with the blsp2-earlycon config, our kernel reaches
+`Run /init as init process` and resets at execve with a peripheral NOC (PNOC),
+for any init binary. That reset is the real, still-open blocker.
 
 ### Remaining next steps
 
-1. **Find the post-8 s reset.** Boot with *light* logging (drop `keep_bootcon`
-   and `ignore_loglevel` — safe now earlycon is on blsp1) so the boot reaches
-   `/init` in reasonable wall-clock over 115200, and capture the crash point with
-   a live console.
-2. **Then confirm Sarala `/init` runs** — busybox first (clear marker), then the
-   Rust PID 1; harden `console.rs`/`mount.rs` as needed. Goal: stage-1 shell.
-3. **Trim oneplus-specifics further** — continue replacing borrowed
-   `msm8996-oneplus-common` with a marlin-specific node set.
-4. **(deferred) `skip_initramfs` on a *flashed* boot** — only relevant if/when we
-   flash boot instead of `fastboot boot`; the transient path already runs
-   `rdinit=/init`.
-
-Ops: an image whose only change was a *smaller* ramdisk refused to jump (aboot
-stayed in `fastboot: processing commands`); keep test ramdisks in the same size
-class as a known-good one. And recovering from a crash-boot often leaves the
-phone in stock Android without adb — a manual Power+Vol-Down to the bootloader is
-the reliable reset.
+1. **Find why execve(/init) NOC-resets**, given it is binary-independent and a
+   PNOC fault. Ideas: it may be an async abort posted during boot that surfaces
+   at the first EL0 return — bisect the remaining still-enabled oneplus/SoC
+   peripherals (glink/qrtr/smem-state remotes, the qnoc interconnect QoS), the
+   way SMP2P was found. Decode the PNOC ERRLOG target if possible.
+2. **Keep captures honest** — verify every log is our mainline kernel, not the
+   stock 3.18 image aboot falls back to after a reset.
+3. **Then confirm Sarala `/init` runs** (busybox marker first, then Rust);
+   harden `console.rs`/`mount.rs`. Goal: stage-1 shell.
+4. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a
+   flashed boot only.

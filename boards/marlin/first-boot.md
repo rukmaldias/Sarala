@@ -545,16 +545,42 @@ visible before is a **console-plumbing** problem, now diagnosed:
 - **`NON_SECURE_WDT`** still bites ~15 s in (no apps-watchdog node in the dtsi,
   so `qcom-wdt` never claims/pets the bootloader-armed HW watchdog).
 
+### CONFIG_VT=n + precise console-tty diagnosis (2026-07-27, cont.)
+
+Rebuilt the kernel with **`CONFIG_VT=n`** (headless; VT_CONSOLE/FRAMEBUFFER_CONSOLE
+auto-dropped). It shrank `/dev` (148→78 entries, VTs gone) but did **not** give an
+interactive console — so the VT was not the (sole) cause. Instrumented PID 1 via
+`/dev/kmsg` to read the authoritative sources:
+
+```
+/proc/consoles:  ttyMSM0        -W- (EC)  242:0    <- the console, CON_CONSDEV
+                 msm_serial_dm0 -W- (E B p)        <- blsp2 earlycon
+/sys/class/tty:  console ttyS0 ttyS1 ttyS2 ttyS3   <- NO ttyMSM0
+```
+
+**Root cause of "no interactive serial":** ttyMSM0 is registered as a *console*
+(so printk reaches the jack via `con->write`) but has **no tty class device** —
+it is absent from `/sys/class/tty`, so devtmpfs creates no `/dev/ttyMSM0`, and
+`mknod`+open of 242:0 returns **ENXIO**. `/dev/console` (5:1) redirects to that
+same non-openable console tty, so userspace stdio (PID 1's and the shell's) has
+nowhere to go, while kernel printk still works. This is a serial-layer issue
+(the msm_serial / `serial_base_bus` "port" device isn't creating the ttyMSM0 tty
+class device for the console port on this kernel), not a VT or DTS problem.
+
 ### Remaining next steps
 
-1. **Fix the serial console for userspace.** Make `/dev/console` reach ttyMSM0,
-   not the VT — likely `CONFIG_VT=n` (headless) so the serial tty owns the
-   console redirect, and/or resolve the ttyMSM0 ENXIO so the port opens as a
-   plain tty. Goal: the busybox shell readable/typable over the jack.
+1. **Get ttyMSM0 registered as a usable tty** (the interactive-console blocker).
+   Investigate why the msm_serial console port has no `/sys/class/tty/ttyMSM0` /
+   openable tty in this kernel — the `serial_base_bus` ctrl/port probe, or a
+   missing SERIAL/TTY config. Cross-check a known-good msm8996 mainline board.
+   Until then, PID 1 output is visible only via `/dev/kmsg`.
 2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims and pets it
-   (`CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y`, `OPEN_TIMEOUT=0` are already set) —
-   stops the `NON_SECURE_WDT` reset so PID 1 runs indefinitely.
+   (`CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y`, `OPEN_TIMEOUT=0` already set) — stops
+   the `NON_SECURE_WDT` reset (~15 s) so PID 1 runs indefinitely.
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.
+
+(Kernel built with `CONFIG_VT=n` on the VM; the config is a VM build artifact,
+not tracked in this repo.)
 2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
    (essential, so can't just disable — but regulator/clock requests to RPM are an
    async candidate), and confirming whether the blsp2 earlycon is implicated by

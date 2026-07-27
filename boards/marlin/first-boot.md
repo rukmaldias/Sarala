@@ -651,14 +651,37 @@ port #1` (the earlycon only pokes TX, but the full probe touches clocks/regs tha
 fault). The earlycon proves the block is *reachable*, so this is a
 clock/power/probe issue to crack.
 
+### blsp2 probe-NOC localized (2026-07-27, cont.)
+
+Instrumented the probe path with `printk_deferred` (visible via the blsp2
+earlycon). Enabling `blsp2_uart2` (→ ttyMSM1, mapbase 0x75b0000):
+
+- probe runs fine through `devm_clk_get`, `devm_pm_opp_*`, `clk_get_rate`
+  (blsp2 core clock = **7372800 Hz**, a live UART baud rate — vs blsp1's
+  19200000 XO — confirming blsp2 was the bootloader's console);
+- `uart_add_one_port` → `serial_core_register_port` → `serial_core_add_one_port`
+  → **crashes inside `uart_configure_port`, before `uart_report_port`** (we never
+  see "75b0000 … at MMIO"), i.e. at the first driver hardware touch
+  (`config_port` / the `set_mctrl` path), while `msm_init_clock` has *not* run
+  for blsp2 (it's not the console) — so the driver hasn't enabled blsp2's
+  core/iface clocks; it relies on the bootloader-left state, which the earlycon's
+  raw TX poke tolerates but a fuller access does not.
+
+**Key insight:** stock Android drives blsp2 as a full tty (`ttyHSL0`), so blsp2
+is *not* inherently dead — we removed a clock/power it needs when we treated the
+whole BLSP2 block as dead (disabled blsp2 i2c/dma). The fix is to give blsp2 what
+it needs, not to avoid it.
+
 ### Remaining next steps
 
-1. **Get a working `blsp2_uart2` tty on the jack.** Fix the full-probe NOC-abort
-   (likely a BLSP2 clock/power detail — `GCC_BLSP2_UART2_APPS_CLK` /
-   `GCC_BLSP2_AHB_CLK`; the block is reachable since the earlycon works). Then
-   move the runtime console + shell tty to blsp2 (`console=` on the blsp2 line,
-   drop the blsp1 console/tty, keep the console on the actual jack). That yields
-   the readable/typable stage-1 shell. Goal: readable/typable busybox shell.
+1. **Make `blsp2_uart2` probe cleanly**, then use it for the console + shell tty
+   (the jack). Investigate the BLSP2 clock/power the driver access needs at
+   `uart_configure_port` time: is `GCC_BLSP2_AHB_CLK` / `GCC_BLSP2_UART2_APPS_CLK`
+   actually enabled then (clk_ignore_unused should keep it, but verify), or is
+   there a BLSP2 power-domain/GDSC the bootloader had on that we don't? Compare
+   against how blsp1 (which probes fine, XO-clocked) differs. Then move
+   `console=` + the shell tty onto the blsp2 line and drop the blsp1 console/tty.
+   That yields the readable/typable stage-1 shell. Goal: readable/typable busybox shell.
 2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
    flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.

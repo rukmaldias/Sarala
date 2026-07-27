@@ -446,16 +446,43 @@ conclusions.
 `Run /init as init process` and resets at execve with a peripheral NOC (PNOC),
 for any init binary. That reset is the real, still-open blocker.
 
+### Peripheral bisect round (2026-07-27, cont.) — it's an async abort
+
+Chased the execve reset directly. Results (each a hardware boot, verified as our
+kernel via `ttyMSM0 at MMIO`/`Run /init`, not the stock 3.18 fallback):
+
+- **`dyndbg="file drivers/base/dd.c +p"` proved it's async.** With per-probe
+  tracing the boot slows ~2.5x and the reset moves from ~2.3 s to ~5.7 s, landing
+  on whatever probe is running (the `msm_serial`/`serial-base` port sub-probe).
+  The crash point tracking log volume = an **async abort**: a NOC write posted
+  early that the interconnect/TZ rejects and delivers later as an SError. So the
+  "last probe" is not the culprit, and probe-boundary bisect can't pin it.
+- **Ruled out (no change; still resets right at execve):**
+  - `slpi_pil` + `adsp_pil` (the other two DSP PIL remoteprocs, like mss_pil).
+  - `a0noc`/`a1noc`/`a2noc`/`mnoc` (aggregation/mm interconnect QoS — the qnoc
+    QoS-write-to-ungated-NOC theory; their consumers are already disabled).
+- **Couldn't cleanly test earlycon.** The abort being "posted early" implicates
+  the blsp2 earlycon (writes 0x75b0000 every printk), but: moving earlycon to
+  blsp1 makes our kernel silent (regression), and dropping earlycon entirely
+  leaves us blind before ttyMSM0 (reset with no output) — neither is conclusive.
+
+**Net:** the execve reset is a real async PNOC/SNOC abort, source not yet caught
+by node-disable bisect. Best next lever is to **decode the aboot NOC ERRLOG**
+(SNOC ERRLOG1 ≈ 0xee0080xx, PNOC ERRLOG1 ≈ 0x0a8010xx, with ERRLOG3/4 as the
+route/address) against the MSM8996 NoC topology to name the master/target
+directly, rather than keep guessing nodes.
+
 ### Remaining next steps
 
-1. **Find why execve(/init) NOC-resets**, given it is binary-independent and a
-   PNOC fault. Ideas: it may be an async abort posted during boot that surfaces
-   at the first EL0 return — bisect the remaining still-enabled oneplus/SoC
-   peripherals (glink/qrtr/smem-state remotes, the qnoc interconnect QoS), the
-   way SMP2P was found. Decode the PNOC ERRLOG target if possible.
-2. **Keep captures honest** — verify every log is our mainline kernel, not the
+1. **Decode the NOC ERRLOG** (master/target/address) to name the faulting access
+   directly — the disciplined path now that node-disable bisect has stalled.
+2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
+   (essential, so can't just disable — but regulator/clock requests to RPM are an
+   async candidate), and confirming whether the blsp2 earlycon is implicated by
+   finding a *working* blsp1 earlycon config (why does blsp1 earlycon go silent?).
+3. **Keep captures honest** — every log must be our mainline kernel, not the
    stock 3.18 image aboot falls back to after a reset.
-3. **Then confirm Sarala `/init` runs** (busybox marker first, then Rust);
+4. **Then confirm Sarala `/init` runs** (busybox marker first, then Rust);
    harden `console.rs`/`mount.rs`. Goal: stage-1 shell.
-4. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a
+5. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a
    flashed boot only.

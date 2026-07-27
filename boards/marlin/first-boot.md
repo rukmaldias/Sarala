@@ -513,13 +513,47 @@ different, benign-to-diagnose one: `Fatal Error: NON_SECURE_WDT` — the QCOM
 non-secure watchdog biting because nothing pets it once the kernel hands off to
 userspace. The whole NOC/DTS bring-up saga is effectively closed.
 
+### Sarala PID 1 runs — the remaining work is console plumbing (2026-07-27)
+
+Instrumented PID 1 to log via **`/dev/kmsg`** (lands in the kernel ring buffer →
+jack, independent of fd 0/1/2). Result — **Sarala's Rust init runs to completion**:
+
+```
+SARALA-INIT: A mounted (devtmpfs up)
+SARALA-INIT: B console::attach returned
+SARALA-INIT: C logged sarala-init banner
+SARALA-INIT: D signals blocked, spawning shell
+SARALA-INIT: E shell spawned, entering supervise loop
+```
+
+PID 1 mounts the early filesystems, blocks signals, spawns `/bin/sh`, and enters
+the supervise loop. The stage-1 userspace path *works*. The reason nothing was
+visible before is a **console-plumbing** problem, now diagnosed:
+
+- **`/dev/console` (5:1) redirects to the VT (`vc/0`, major 4), not the jack.**
+  `CONFIG_VT=y` gives a virtual console that holds the console redirect;
+  userspace writes to `/dev/console` go there (invisible), while kernel printk
+  reaches the jack via the console framework directly. So PID 1's stdio (and the
+  shell's) go nowhere.
+- **`/dev/ttyMSM0` isn't usable.** devtmpfs didn't create it;
+  `/proc/tty/drivers` shows `msm_serial /dev/ttyMSM 242`, but `mknod`-ing
+  `/dev/ttyMSM0` (242:0) and opening it returns **ENXIO** — the console port
+  isn't open-able as a plain tty.
+- **`keep_bootcon` is required** — dropping it wedges the boot at
+  `bootconsole [msm_serial_dm0] disabled` (the blsp2 earlycon teardown), even
+  with the NOC fixed.
+- **`NON_SECURE_WDT`** still bites ~15 s in (no apps-watchdog node in the dtsi,
+  so `qcom-wdt` never claims/pets the bootloader-armed HW watchdog).
+
 ### Remaining next steps
 
-1. **Handle the non-secure watchdog** (`NON_SECURE_WDT` at ~15 s): pet it or
-   disable the bite for bring-up so PID 1 can run indefinitely.
-2. **Get PID 1 to log** — busybox-as-init produced no marker before the WDT;
-   confirm it execs and wire its stdio to the console, then Sarala's Rust init.
-   Goal: the stage-1 shell.
+1. **Fix the serial console for userspace.** Make `/dev/console` reach ttyMSM0,
+   not the VT — likely `CONFIG_VT=n` (headless) so the serial tty owns the
+   console redirect, and/or resolve the ttyMSM0 ENXIO so the port opens as a
+   plain tty. Goal: the busybox shell readable/typable over the jack.
+2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims and pets it
+   (`CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y`, `OPEN_TIMEOUT=0` are already set) —
+   stops the `NON_SECURE_WDT` reset so PID 1 runs indefinitely.
 3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.
 2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
    (essential, so can't just disable — but regulator/clock requests to RPM are an

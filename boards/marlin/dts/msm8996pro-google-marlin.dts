@@ -55,14 +55,18 @@
 };
 
 /*
- * The whole BLSP2 block (0x75bxxxx) is dead/inaccessible on marlin — register
- * access NOC-aborts. Disable every BLSP2 peripheral oneplus-common enables.
- * (blsp2_uart2's driver is disabled, but earlycon still binds to it via
- * stdout-path — of_setup_earlycon ignores status; see the CONSOLE note above.)
+ * The whole BLSP2 block is dead/inaccessible on marlin — register access
+ * NOC-aborts. Disable every BLSP2 peripheral, including the BAM DMA engine
+ * (0x7584000): its `bam` driver READS BAM registers at probe (it is
+ * qcom,controlled-remotely, so it does not power the block itself), and that
+ * read into the gated BLSP2 block is the async PNOC RD+DISC abort that reset us
+ * at execve — see the ERRLOG decode in first-boot.md. blsp1_dma (0x7544000, the
+ * console block's BAM) is fine and stays enabled.
  */
 &blsp2_uart2 { status = "disabled"; };
 &blsp2_i2c1  { status = "disabled"; };
 &blsp2_i2c6  { status = "disabled"; };
+&blsp2_dma   { status = "disabled"; };
 
 /*
  * Multimedia (MMSS) and audio (LPASS) IOMMUs: register access NOC-aborts

@@ -498,12 +498,29 @@ the master/target but needs the MSM8996 NoC route table (generated/proprietary);
 the high bits are a stable initiator, the logged address is a small register
 offset (~0x8) in the target.
 
+### FOUND IT — the BLSP2 BAM read (2026-07-27, cont.)
+
+The gated-PNOC reader was **`blsp2_dma` (BLSP2 BAM, 0x7584000)**. We had disabled
+`blsp2_uart2`/`i2c` but missed the block's DMA engine. Its `bam` driver is
+`qcom,controlled-remotely`, so it READS BAM registers at probe *without* powering
+the block — a read into the gated BLSP2 block = the async PNOC RD+DISC that reset
+us at execve. (It's the early `bam-dma-engine 7584000.dma-controller` in the
+dyndbg probe trace; the abort posts there and lands async at userspace entry.)
+
+**Disabling `&blsp2_dma` cleared the execve NOC.** The kernel now runs ~10 s past
+`Run /init` (to ~14.9 s) — no more NOC_ERROR. The reset that remains is a
+different, benign-to-diagnose one: `Fatal Error: NON_SECURE_WDT` — the QCOM
+non-secure watchdog biting because nothing pets it once the kernel hands off to
+userspace. The whole NOC/DTS bring-up saga is effectively closed.
+
 ### Remaining next steps
 
-1. **Find the driver reading a gated PNOC peripheral.** Given it's a READ to a
-   clock/GDSC-off target: enumerate still-enabled peripherals whose gcc GDSC we
-   don't keep on, and either keep the domain on or disable the reader. `dyndbg`
-   the clk/gdsc enable path, or bisect remaining PNOC peripheral drivers.
+1. **Handle the non-secure watchdog** (`NON_SECURE_WDT` at ~15 s): pet it or
+   disable the bite for bring-up so PID 1 can run indefinitely.
+2. **Get PID 1 to log** — busybox-as-init produced no marker before the WDT;
+   confirm it execs and wire its stdio to the console, then Sarala's Rust init.
+   Goal: the stage-1 shell.
+3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.
 2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
    (essential, so can't just disable — but regulator/clock requests to RPM are an
    async candidate), and confirming whether the blsp2 earlycon is implicated by

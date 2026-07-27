@@ -9,16 +9,17 @@
  * The oneplus msm8996 common dtsi supplies exactly that and is proven to boot
  * msm8996 to a console, so we reuse it here.
  *
- * RESULT (verified on hardware 2026-07-26): the kernel boots and kernel log
- * appears on ttyMSM0 over the 3.5mm jack (blsp1_uart2, 0x7570000) — the stage-1
- * "kernel log over serial" signal, on real marlin. Iterating past NOC aborts
- * from unpowered peripherals (SMMUs, BLSP2 block, GPU, SMP2P IPC to the DSPs).
- * Boot cmdline should include `clk_ignore_unused` (else clk_disable_unused
- * WARNs on `fd_ahb_clk`, a CAMSS clock under a powered-off domain).
- * REMAINING BLOCKER: a residual *async* NOC_ERROR/TZ-abort reset around the
- * i2c/cpufreq stage (~2 s) — the crash point moves with logging, so it's an
- * IRQ/callback from a still-running remote or an unpowered block, not yet
- * pinned. See first-boot.md.
+ * RESULT (verified on hardware 2026-07-27): the mainline kernel boots to
+ * completion and runs `/init` — kernel log on ttyMSM0 over the 3.5mm jack
+ * (blsp1_uart2, 0x7570000), ending in `Run /init as init process`. Got here by
+ * iterating past every NOC abort from unpowered/oneplus-only peripherals: SMMUs,
+ * BLSP2 block, GPU, SMP2P IPC to the DSPs, the oneplus board peripherals
+ * (display/camera/audio/PCIe/USB/UFS/modem), the oneplus BLSP1 i2c buses, and
+ * finally CPU DVFS (see the trims below). Boot cmdline needs `clk_ignore_unused`
+ * (else clk_disable_unused WARNs on `fd_ahb_clk`, a CAMSS clock under a
+ * powered-off domain). The kernel is no longer the blocker; the next frontier is
+ * userspace (Sarala `/init` resets in ~40 ms — needs a console). See
+ * first-boot.md.
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
@@ -91,3 +92,60 @@
 &{/smp2p-adsp} { status = "disabled"; };
 &{/smp2p-mpss} { status = "disabled"; };
 &{/smp2p-slpi} { status = "disabled"; };
+
+/*
+ * STEP #2 — trim the oneplus board peripherals (2026-07-27).
+ *
+ * oneplus-common brings up its own panel, camera, audio card, WiFi/PCIe, USB,
+ * UFS and modem, all wired to oneplus-specific GPIOs/regulators/remotes that
+ * marlin does NOT share. None is needed for a stage-1 serial-console boot, and
+ * none feeds the console path (blsp1_uart2 + its gcc clocks + the PM8994
+ * rails), so disabling them is safe for the boot while shrinking the masquerade
+ * toward a marlin-specific node set. This also clears candidate async-NOC
+ * sources — especially mss_pil, which pokes the still-running MPSS modem the
+ * same remote SMP2P already faulted us on.
+ */
+&mdp           { status = "disabled"; };  /* display controller */
+&mdss          { status = "disabled"; };
+&mdss_dsi0     { status = "disabled"; };
+&mdss_dsi0_phy { status = "disabled"; };
+&camss         { status = "disabled"; };  /* camera */
+&sound         { status = "disabled"; };  /* audio card */
+&q6asmdai      { status = "disabled"; };
+&slim_msm      { status = "disabled"; };  /* SLIMbus (audio) */
+&pcie0         { status = "disabled"; };  /* WiFi/PCIe */
+&pcie_phy      { status = "disabled"; };
+&usb3          { status = "disabled"; };  /* USB */
+&hsusb_phy1    { status = "disabled"; };
+&hsusb_phy2    { status = "disabled"; };
+&ufshc         { status = "disabled"; };  /* UFS storage */
+&ufsphy        { status = "disabled"; };
+&mss_pil       { status = "disabled"; };  /* modem PIL — pokes MPSS remote */
+
+/*
+ * oneplus BLSP1 i2c buses carrying oneplus-only client devices marlin lacks:
+ *   blsp1_i2c3 (0x7577000) → tfa9890 audio amp
+ *   blsp1_i2c6 (0x757a000) → bq27541 fuel gauge
+ * Probing the bus brings up the QUP to reach those absent devices, which throws
+ * a PNOC (peripheral NOC) abort → instant TZ reset right after ttyMSM0 comes up
+ * (~2.38 s). This was the "residual async NOC" — captured at last via aboot's
+ * NOC error dump (PNOC ERRLOG1 = 0x0a801204, a BLSP QUP route). marlin's own
+ * i2c bus/device map replaces these later. (blsp2_i2c1's fusb301 is already
+ * covered by the blsp2 block-disable above.)
+ */
+&blsp1_i2c3    { status = "disabled"; };
+&blsp1_i2c6    { status = "disabled"; };
+
+/*
+ * Stage-1: disable CPU DVFS. mainline qcom-cpufreq-nvmem does its first
+ * clk_set_rate on the Kryo clock (&kryocc), which reprograms the APCS PLL/mux +
+ * CBF and the vdd-apc CPR — that path NOC-aborts on marlin (instant TZ reset at
+ * the first cpufreq setpoint ~2.0 s, right after ttyMSM0; aboot logs
+ * NOC_ERROR). Dropping operating-points-v2 from the CPUs makes cpufreq fail to
+ * build a table, so the cores simply stay at the boot frequency — fine for a
+ * serial-console boot. Real DVFS (with CPR/vdd-apc modelled) is a later stage.
+ */
+&cpu0 { /delete-property/ operating-points-v2; };
+&cpu1 { /delete-property/ operating-points-v2; };
+&cpu2 { /delete-property/ operating-points-v2; };
+&cpu3 { /delete-property/ operating-points-v2; };

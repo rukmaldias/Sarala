@@ -327,13 +327,62 @@ enumerating) and not auto-recovering. Force a reboot: **hold Power + Volume-Down
 phone takes ~30 s+ to reset to Android, so wait for adb/fastboot before the next
 `fastboot boot` (racing it fails with "no devices").
 
+## Kernel reaches `/init` — trim the board peripherals + kill DVFS (2026-07-27)
+
+The residual async NOC turned out to be **two ordinary peripheral faults** the
+console just hadn't reached yet. Trimming oneplus board nodes we don't use
+(step #2) both shrank the masquerade *and* peeled them off one at a time — and
+this session the bootloader finally handed us the missing backtrace: HTC aboot
+dumps the **NOC error registers** after the reset (`SNOC/PNOC ERROR: ERRLOGn`),
+so the faults are no longer silent.
+
+- **Fault 1 — oneplus i2c buses (PNOC abort).** With the big peripherals off
+  (display/camera/audio/PCIe/USB/UFS/`mss_pil`), the last kernel line before the
+  reset was `i2c_qup 7577000.i2c` / `757a000.i2c`, then `PNOC ERROR ERRLOG1 =
+  0x0a801204` (a BLSP QUP route). Those are `blsp1_i2c3` (tfa9890 amp) and
+  `blsp1_i2c6` (bq27541 fuel gauge) — **oneplus-only devices marlin lacks**;
+  bringing up the QUP to reach them NOC-aborts. Disabled both buses.
+- **Fault 2 — CPU DVFS (cpufreq).** Next reset landed exactly at
+  `cpufreq_policy_online: CPU0 … changing to 1056000 kHz`. `qcom-cpufreq-nvmem`'s
+  first `clk_set_rate` on `&kryocc` reprograms the APCS PLL/mux + CBF + vdd-apc
+  CPR, and that path aborts. Dropped `operating-points-v2` from all four CPUs so
+  cpufreq never scales — cores stay at boot frequency. **This cleared the last
+  kernel-side fault.**
+
+**RESULT (verified on hardware 2026-07-27): the kernel boots to completion and
+runs `/init`.** Log ends with `Freeing unused kernel memory` → `Run /init as
+init process` → the Sarala Rust PID1 executes. The whole NOC/DTS bring-up saga
+is done — the mainline kernel is up on marlin.
+
+Two bonus findings:
+- **`skip_initramfs` is a non-issue on this path.** The effective cmdline for a
+  transient `fastboot boot` keeps our `rdinit=/init` — aboot does *not* append
+  `skip_initramfs` / `root=/dev/dm-0`. (Pending task, now moot for `fastboot
+  boot`; a flashed boot may differ.)
+- The boot.img ramdisk **is Sarala's init**: a 397 KB static aarch64 ELF plus
+  busybox and a skeleton rootfs.
+
+### New frontier — userspace: `/init` resets in ~40 ms
+
+After `Run /init` (2.468 s) init runs ~43 ms, then at 2.511 s the kernel emits
+one truncated line (only the `[    2.51166` timestamp escapes) and the HTC
+watchdog resets. No init output, no full panic text. Signature = **init exits
+almost immediately → kernel starts the "Attempted to kill init!" panic →
+hardware reset truncates it.** Prime suspect: the ramdisk `/dev` is **empty**
+(no `console` node), so Sarala's `console.rs` can't open a console and init
+bails. This is the first *userspace* problem — the kernel is no longer the
+blocker.
+
 ### Remaining next steps
 
-1. **Pin the residual async NOC source.** Candidates: another running-remote IRQ
-   (glink/qrtr/smem-state), cpufreq touching the APCS/CBF CPU clock, or the
-   hardware interconnect (qnoc) QoS programming. Bisect by disabling each; use
-   `dyndbg` (dd.c) to see the probe boundary the reset lands near.
-2. **Trim oneplus-specifics** — once booting, replace borrowed
-   `msm8996-oneplus-common` with a marlin-specific node set.
-3. **Defeat `skip_initramfs`** — so the kernel runs Sarala's `/init` instead of
-   mounting stock Android's dm-verity system, to reach the stage-1 shell.
+1. **Get Sarala `/init` to survive and log.** Give it a console: mount
+   `devtmpfs` on `/dev` early (or ship a static `/dev/console` node in the
+   initramfs, and/or `CONFIG_DEVTMPFS_MOUNT`), and make `console.rs` tolerate a
+   missing console instead of exiting. First goal: any output from PID1 over the
+   jack. Then the stage-1 shell (busybox `sh`).
+2. **Trim oneplus-specifics further** — the peripheral/i2c/DVFS trims above are
+   the start; continue replacing borrowed `msm8996-oneplus-common` with a
+   marlin-specific node set now that we know which nodes matter.
+3. **(deferred) `skip_initramfs` on a *flashed* boot** — only relevant if/when we
+   flash boot instead of `fastboot boot`; the transient path already runs
+   `rdinit=/init`.

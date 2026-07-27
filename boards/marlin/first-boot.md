@@ -472,10 +472,38 @@ by node-disable bisect. Best next lever is to **decode the aboot NOC ERRLOG**
 route/address) against the MSM8996 NoC topology to name the master/target
 directly, rather than keep guessing nodes.
 
+### NOC ERRLOG decoded (2026-07-27, cont.)
+
+Values are constant per NoC across every boot (RouteId low bits aside):
+
+```
+SNOC  ERRLOG0=0x80030100  ERRLOG1=0xee00_8/9_xx  ERRLOG3=0x08 ERRLOG4=0x10
+PNOC  ERRLOG0=0x80030300  ERRLOG1=0x0a801_0/2_xx ERRLOG3=0x08 ERRLOG4=0x08
+```
+
+ERRLOG0 is the Arteris FlexNoC ErrLog0 (Qualcomm uses FlexNoC; format confirmed
+against NVIDIA Tegra's open-source `cbb-noc` driver, same logger):
+`Opc[4:1]`, `ErrCode[10:8]`; ErrCode enum `SLV=0 DEC=1 UNS=2 DISC=3 SEC=4 HIDE=5
+TMO=6`; `Opc=0 = RD`.
+
+- **SNOC 0x80030100 → RD + DEC** (decode error: address maps to no target).
+- **PNOC 0x80030300 → RD + DISC** (disconnected: target clock/power gated).
+
+**Both are READS** — which *exonerates the blsp2 earlycon* (writes, `Opc=4`), and
+explains why moving/dropping earlycon never changed anything. The fault is some
+driver **reading a peripheral register while its clock/GDSC is off** (PNOC DISC).
+`clk_ignore_unused` only keeps already-on clocks on; `pd_ignore_unused` didn't
+help, so the gated domain is likely a **gcc GDSC** outside genpd. RouteId names
+the master/target but needs the MSM8996 NoC route table (generated/proprietary);
+the high bits are a stable initiator, the logged address is a small register
+offset (~0x8) in the target.
+
 ### Remaining next steps
 
-1. **Decode the NOC ERRLOG** (master/target/address) to name the faulting access
-   directly — the disciplined path now that node-disable bisect has stalled.
+1. **Find the driver reading a gated PNOC peripheral.** Given it's a READ to a
+   clock/GDSC-off target: enumerate still-enabled peripherals whose gcc GDSC we
+   don't keep on, and either keep the domain on or disable the reader. `dyndbg`
+   the clk/gdsc enable path, or bisect remaining PNOC peripheral drivers.
 2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
    (essential, so can't just disable — but regulator/clock requests to RPM are an
    async candidate), and confirming whether the blsp2 earlycon is implicated by

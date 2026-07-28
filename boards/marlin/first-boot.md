@@ -816,16 +816,40 @@ clk_ignore_unused`): `XPU=0 TZ_ABORT=0 NOC=0`, `Run /init` → `sarala-init` →
 `/ #`, persistent, typable (`echo $((7*8))` → `56`). `clk: Not disabling unused clocks`
 (clean — no stray WARN).
 
+### STORAGE — UFS up, /dev/sda reachable (2026-07-28)
+
+Re-enabled UFS (`&ufsphy` + `&ufshc` with the standard msm8996 rails) so Sarala can reach
+the boot device — the prerequisite for writing the A/B "successful" bit (the permanent fix
+for slot stickiness). The kernel already had the whole stack (`SCSI_UFS_QCOM`,
+`PHY_QCOM_QMP_UFS`, `EFI_PARTITION`), so this was dtb-only.
+
+**Bug found + fixed on the way:** the whole `qcom_rpm_smd_regulator` probe was failing with
+`-EINVAL` on `lvs2` — a PM8994 *switch* (no voltage control) that carried a
+`regulator-min/max-microvolt` constraint the 6.16 regulator core rejects. That one failure
+tore down **every** PM8994 rail (devm unwind), so UFS's `vdd-hba`/`vdda-phy` deferred
+forever. It was invisible until now because nothing before UFS consumed those rails.
+Dropped the unused `lvs2` node (it only fed the oneplus panel).
+
+**VERIFIED on hardware 2026-07-28:** `scsi host0: ufshcd`, `SAMSUNG KLUBG4G1CE-B0B1`,
+`[sda] 31.9 GB`, LUNs sda–sdf, GPT parsed → `sda18..sda36` (boot_a=sda19, boot_b=sda20).
+`/dev/sda` and `/dev/sda20` block nodes exist in the shell (devtmpfs). One wrinkle: the
+kernel logged `GPT:partition_entry_array_crc32 ... don't match` and recovered via the
+backup GPT — marlin's primary-GPT entry-array CRC is nonstandard, so the bootctrl writer
+must recompute CRCs carefully and update both primary and backup.
+
 ### Remaining next steps
 
-1. **Console cleanup:** consider disabling `blsp1_uart2` (unused, not the jack);
-   optionally add the wdt bark/bite interrupts (GIC_SPI 28/29) for pretimeout.
-2. **Grow busybox applet set** in `mkinitramfs.sh` (e.g. `uname`, `mount`, `free`,
-   `reboot`) so the stage-1 shell is more useful.
-3. **Reconcile regulator voltages** against the marlin downstream dts (the PM8994 rail
-   map is carried over from the common msm8996 config; values want a marlin pass).
-4. **A/B durability:** mark the slot successful / handle the rollback counter so repeated
-   reboots keep booting Sarala instead of reverting to stock (a rollback flipped the
-   active slot to `a` during this session).
-5. **Re-flash** the standalone image to `boot_b` (and `fastboot --set-active=b`) to make
-   the de-masqueraded tree the installed one.
+1. **Bootctrl tool (the A/B stickiness fix):** a small tool in the initramfs that opens
+   `/dev/sda`, finds `boot_b` in the GPT, sets its attribute bits (successful=1, active,
+   priority=3, unbootable=0, max retries), recomputes the entry-array + header CRC32s, and
+   writes back **both** primary and backup GPT. Then have Sarala init run it on boot so the
+   active slot is always marked good — no more rollback to stock. (The one delicate write
+   on the boot device; test read-only first.)
+2. **Re-flash** the current image (de-masq + watchdog + UFS) to `boot_b` so the installed
+   tree matches the repo.
+3. **Console cleanup:** consider disabling `blsp1_uart2`; optionally add wdt bark/bite
+   interrupts (GIC_SPI 28/29) for pretimeout.
+4. **Grow busybox applet set** (`uname`, `mount`, `free`, `reboot`, `dd`, `od`).
+5. **Reconcile regulator voltages** against the marlin downstream dts.
+6. **(Nice-to-have) reboot-to-bootloader:** add an IMEM `syscon-reboot-mode` so Sarala can
+   drop to fastboot without the Power+Vol-Down key-combo (mainline msm8996 lacks it).

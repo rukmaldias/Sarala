@@ -279,10 +279,15 @@
 			regulator-max-microvolt = <1800000>;
 		};
 
-		vreg_lvs2a: lvs2 {
-			regulator-min-microvolt = <1800000>;
-			regulator-max-microvolt = <1800000>;
-		};
+		/*
+		 * NOTE: pm8994 lvs2 (a low-voltage *switch*, no voltage control) is
+		 * intentionally omitted. Giving a switch regulator-min/max-microvolt
+		 * makes the regulator core reject it with -EINVAL, which fails the
+		 * entire qcom_rpm_smd_regulator probe and tears down *all* PM8994 rails
+		 * (observed: UFS then can't get vdd-hba, defers forever). lvs2 only fed
+		 * the oneplus panel vddio, which marlin doesn't use here. If a consumer
+		 * ever needs it, add it back WITHOUT the voltage constraint.
+		 */
 	};
 };
 
@@ -330,6 +335,32 @@
  */
 &tlmm {
 	gpio-reserved-ranges = <81 4>;
+};
+
+/*
+ * UFS storage (the boot device: /dev/sda, holds the GPT + boot_a/boot_b).
+ * Needed so Sarala can read/write the A/B boot-control metadata — marlin stores
+ * the slot "successful"/priority/retry bits in the GPT partition attributes, and
+ * without marking the active slot successful the bootloader rolls back to stock
+ * after a few boots. Supplies are the standard msm8996 UFS rails (all defined in
+ * &rpm_requests above). PHY + host controller drivers are built in
+ * (PHY_QCOM_QMP_UFS, SCSI_UFS_QCOM). Re-enables the SoC nodes disabled by default.
+ */
+&ufsphy {
+	vdda-phy-supply = <&vreg_l28a_0p925>;
+	vdda-pll-supply = <&vreg_l12a_1p8>;
+	status = "okay";
+};
+
+&ufshc {
+	vcc-supply = <&vreg_l20a_2p95>;
+	vccq-supply = <&vreg_l25a_1p2>;
+	vccq2-supply = <&vreg_s4a_1p8>;
+	vdd-hba-supply = <&vreg_l25a_1p2>;
+	vcc-max-microamp = <600000>;
+	vccq-max-microamp = <450000>;
+	vccq2-max-microamp = <450000>;
+	status = "okay";
 };
 
 /*

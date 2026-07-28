@@ -618,8 +618,6 @@ console+tty on other mainline boards, so our heavily-stripped config differs in
 some way not yet found (candidate: blsp1 BAM/PIO state, or console/tty `NCF_TX`
 coordination on this port).
 
-### Remaining next steps
-
 ### BREAKTHROUGH — the jack is BLSP2, not BLSP1 (we had the UART backwards)
 
 In-driver `printk_deferred` traces (in `__msm_console_write` and
@@ -672,29 +670,72 @@ is *not* inherently dead — we removed a clock/power it needs when we treated t
 whole BLSP2 block as dead (disabled blsp2 i2c/dma). The fix is to give blsp2 what
 it needs, not to avoid it.
 
+### BREAKTHROUGH — blsp2 abort solved; interactive shell on the jack (2026-07-28)
+
+The "blsp2 probe NOC-aborts" was **never a missing clock or power domain.** In-driver
+synchronous traces (`printk`, gated on `port->line == 1`, through `msm_serial_probe`,
+`uart_configure_port`, `msm_config_port`, `msm_power`, `msm_set_mctrl`) proved blsp2 is
+fully healthy during probe:
+
+- `report_port` prints `ttyMSM1 at MMIO 0x75b0000 (irq 28, base_baud 460800)`;
+- `msm_power`: `opp_set_rate done` / `core clk on` / `pclk on` — **all clocks enable**;
+- `set_mctrl`: `read MR1=0`, writes MR1/CR — **basic register R/W to 0x75b0000 works.**
+
+The reset then landed *after* `configure_port`, and **persisted even with every driver
+clock-op and register-write neutered for line 1** — so it was not anything the driver
+does to the hardware. It is a **posted, asynchronous** abort. aboot's NOC error logger
+(dumped on the next boot) decoded it:
+
+```
+PNOC ERROR: ERRLOG0 = 0x80030300   -> valid, Opc=RD, ErrCode[10:8]=3 = DISC (disconnected)
+PNOC ERROR: ERRLOG1 = 0x0a80xxxx   -> a BLSP QUP route
+check_ramdump_condition(): reset_message = RPM:TZ ABORT!
+```
+
+A **READ** to a **BLSP2** address whose **clock is gated**. With driver reads neutered,
+the only remaining reader is the **earlycon** (`msm_serial_dm0` on 0x75b0000), which
+poll-reads the status register on every `printk`. The mechanism:
+
+1. blsp2 was the earlycon but `console=ttyMSM0` made **blsp1** the real console, so
+   serial_core treated blsp2 as a **non-console** port;
+2. `uart_configure_port` ends every non-console port with
+   `if (!uart_console(port)) uart_change_pm(UART_PM_STATE_OFF)` → `msm_power` case 3 →
+   **disables blsp2's apps + AHB clocks**;
+3. the earlycon (alive via `keep_bootcon`) then reads blsp2's SR into the now
+   clock-gated block → **PNOC RD+DISC → RPM:TZ ABORT** ~1 s later.
+
+blsp1 never hit this because it *was* the console (never powered off). This is the
+"reader-hunt": the reader was the earlycon, and the full driver pulled the clock out
+from under it.
+
+**Fix (matches the goal exactly): make blsp2 the real console.** Enable `blsp2_uart2`
+and boot with `console=ttyMSM1` (not `ttyMSM0`). As the real console it is never
+powered off, the earlycon→ttyMSM1 handover is clean, and the jack gets a readable
+console *and* a usable tty.
+
+**VERIFIED on hardware 2026-07-28** (pristine kernel, `blsp2_uart2` = okay,
+`earlycon console=ttyMSM1,115200n8`):
+
+```
+console [ttyMSM1] enabled ... Freeing unused ... Run /init
+[init] sarala-init 0.0.1
+[init] /bin/sh started as pid 80
+/ #
+```
+
+`TZ ABORT = 0`, `NOC_ERROR = 0`. The **Sarala stage-1 shell prompt is live on the 3.5mm
+jack.** (With `keep_bootcon` the output doubles — earlycon + ttyMSM1 on the same UART;
+drop `keep_bootcon` for single output.)
+
 ### Remaining next steps
 
-1. **Make `blsp2_uart2` probe cleanly**, then use it for the console + shell tty
-   (the jack). Investigate the BLSP2 clock/power the driver access needs at
-   `uart_configure_port` time: is `GCC_BLSP2_AHB_CLK` / `GCC_BLSP2_UART2_APPS_CLK`
-   actually enabled then (clk_ignore_unused should keep it, but verify), or is
-   there a BLSP2 power-domain/GDSC the bootloader had on that we don't? Compare
-   against how blsp1 (which probes fine, XO-clocked) differs. Then move
-   `console=` + the shell tty onto the blsp2 line and drop the blsp1 console/tty.
-   That yields the readable/typable stage-1 shell. Goal: readable/typable busybox shell.
-2. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config
-   flags already set) — stops the `NON_SECURE_WDT` reset (~15 s).
-3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`**.
-
-(Kernel built with `CONFIG_VT=n` on the VM; the .config is a VM build artifact,
-not tracked in this repo.)
-2. **Suspects still worth a targeted try:** the RPM `glink-edge`/`smd-rpm` path
-   (essential, so can't just disable — but regulator/clock requests to RPM are an
-   async candidate), and confirming whether the blsp2 earlycon is implicated by
-   finding a *working* blsp1 earlycon config (why does blsp1 earlycon go silent?).
-3. **Keep captures honest** — every log must be our mainline kernel, not the
-   stock 3.18 image aboot falls back to after a reset.
-4. **Then confirm Sarala `/init` runs** (busybox marker first, then Rust);
-   harden `console.rs`/`mount.rs`. Goal: stage-1 shell.
-5. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a
-   flashed boot only.
+1. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config flags
+   `CONFIG_QCOM_WDT`/`WATCHDOG_HANDLE_BOOT_ENABLED` already set) — a **non-secure
+   watchdog resets ~15 s in**, so the shell is not yet persistent (the RAM boot resets
+   and aboot falls back to stock Android). This is the blocker for a lasting shell.
+2. **Prove typability** on the persistent shell (send keystrokes, expect echo/exec).
+   The tty is a real console+tty so RX should work once the shell survives; today the
+   ~15 s reset makes an interactive test race the watchdog.
+3. **Clean up the console:** drop `keep_bootcon` (single output); consider disabling
+   `blsp1_uart2` (unused, not the jack).
+4. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a flashed boot.

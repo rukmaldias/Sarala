@@ -9,36 +9,37 @@
  * The oneplus msm8996 common dtsi supplies exactly that and is proven to boot
  * msm8996 to a console, so we reuse it here.
  *
- * RESULT (verified on hardware 2026-07-27): the mainline kernel boots to
- * completion and runs `/init` — kernel log on ttyMSM0 over the 3.5mm jack
- * (blsp1_uart2, 0x7570000), ending in `Run /init as init process`. Got here by
- * iterating past every NOC abort from unpowered/oneplus-only peripherals: SMMUs,
- * BLSP2 block, GPU, SMP2P IPC to the DSPs, the oneplus board peripherals
- * (display/camera/audio/PCIe/USB/UFS/modem), the oneplus BLSP1 i2c buses, and
- * finally CPU DVFS (see the trims below). Boot cmdline needs `clk_ignore_unused`
- * (else clk_disable_unused WARNs on `fd_ahb_clk`, a CAMSS clock under a
- * powered-off domain). The kernel is no longer the blocker; the next frontier is
- * userspace (Sarala `/init` resets in ~40 ms — needs a console). See
- * first-boot.md.
+ * RESULT (verified on hardware 2026-07-28): the mainline kernel boots to
+ * completion, runs Sarala `/init`, and spawns an interactive `/bin/sh` whose
+ * prompt appears on the 3.5mm jack — the stage-1 shell (ttyMSM1 = blsp2_uart2,
+ * 0x75b0000; boot with `console=ttyMSM1`). Got here by iterating past every NOC
+ * abort from unpowered/oneplus-only peripherals: SMMUs, the BLSP2 i2c/BAM, GPU,
+ * SMP2P IPC to the DSPs, the oneplus board peripherals
+ * (display/camera/audio/PCIe/USB/UFS/modem), the oneplus BLSP1 i2c buses, CPU
+ * DVFS (see the trims below), and finally the blsp2 console abort (see the BLSP2
+ * note). Boot cmdline needs `clk_ignore_unused` (else clk_disable_unused WARNs on
+ * `fd_ahb_clk`, a CAMSS clock under a powered-off domain). REMAINING: a
+ * non-secure watchdog resets ~15 s in (needs the apps-wdt node so qcom-wdt pets
+ * it) — until then the shell is not persistent. See first-boot.md.
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
  * live console; a marlin-specific node set replaces it later.
  *
- * CONSOLE (corrected 2026-07-27 — the jack is BLSP2, not BLSP1; see first-boot.md):
- *  - The 3.5mm jack debug UART is blsp2_uart2 (0x75b0000). What is visible on the
- *    jack is the `earlycon` (msm_serial_dm0) bound via stdout-path = serial1
- *    (blsp2), inherited from oneplus-common; `keep_bootcon` keeps it alive so we
- *    see the whole boot. Proven by tracing port->mapbase (console writes go to
- *    0x75b0000; ttyMSM0 tty writes go to 0x7570000 and never reach the jack).
- *  - blsp2_uart2's FULL driver probe still NOC-aborts, so it stays disabled and
- *    we cannot yet expose it as a runtime tty. The earlycon only pokes TX, which
- *    works, so the block is reachable — fixing the probe is the open task.
- *  - blsp1_uart2 (0x7570000, ttyMSM0) is enabled as the runtime console/tty, but
- *    it is NOT the jack, so its output is invisible. TODO: once blsp2_uart2
- *    probes, move the runtime console + shell tty onto it (the real jack).
- *  Boot with cmdline: `earlycon console=ttyMSM0,115200n8 clk_ignore_unused`
- *  (stdout-path stays serial1, inherited from oneplus-common).
+ * CONSOLE (resolved 2026-07-28; see the BLSP2 note below and first-boot.md):
+ *  - The 3.5mm jack debug UART is blsp2_uart2 (0x75b0000) = ttyMSM1. It is the
+ *    earlycon (msm_serial_dm0, via stdout-path = serial1) AND the runtime console
+ *    + shell tty. Boot with `console=ttyMSM1` so it is the *real* console —
+ *    otherwise serial_core powers it off as a non-console port and the still-live
+ *    earlycon's status-register poll into the gated block triggers an
+ *    "RPM:TZ ABORT" (the root cause of the old "blsp2 probe NOC-aborts"; see the
+ *    BLSP2 note). As the real console it is never powered off.
+ *  - blsp1_uart2 (0x7570000, ttyMSM0) is left enabled but is NOT the jack and is
+ *    no longer the console; its output is invisible. It can be dropped later.
+ *  Boot cmdline: `earlycon console=ttyMSM1,115200n8 clk_ignore_unused`
+ *  (stdout-path = serial1 is inherited from oneplus-common). `keep_bootcon` is
+ *  optional now (both earlycon and ttyMSM1 are the same UART); dropping it gives
+ *  single, non-doubled output.
  */
 /dts-v1/;
 
@@ -56,27 +57,47 @@
 };
 
 /*
- * The whole BLSP2 block is dead/inaccessible on marlin — register access
- * NOC-aborts. Disable every BLSP2 peripheral, including the BAM DMA engine
- * (0x7584000): its `bam` driver READS BAM registers at probe (it is
- * qcom,controlled-remotely, so it does not power the block itself), and that
- * read into the gated BLSP2 block is the async PNOC RD+DISC abort that reset us
- * at execve — see the ERRLOG decode in first-boot.md. blsp1_dma (0x7544000, the
- * console block's BAM) is fine and stays enabled.
+ * BLSP2: blsp2_uart2 @ 0x75b0000 is marlin's debug UART on the 3.5mm jack — the
+ * bootloader's console and our earlycon (msm_serial_dm0, via stdout-path =
+ * serial1 from oneplus-common). ENABLE it: it is the runtime console + shell tty
+ * (ttyMSM1).
+ *
+ * It MUST be the kernel's *real* console — boot with `console=ttyMSM1`. If it is
+ * only the earlycon while `console=` points at another UART, serial_core treats
+ * blsp2_uart2 as a non-console port and powers it OFF at the end of
+ * uart_configure_port (uart_change_pm UART_PM_STATE_OFF -> msm_power gates the
+ * BLSP2 apps+AHB clocks). The earlycon, kept alive by keep_bootcon, then
+ * poll-reads blsp2's status register into the now clock-gated block -> async
+ * PNOC RD+DISC NOC error -> aboot "RPM:TZ ABORT" reset ~1 s later. (This — not a
+ * missing clock/power — was the long-hunted blsp2 probe abort; the block is
+ * fully accessible, the driver just pulled the clock out from under the still-
+ * live earlycon. See first-boot.md for the trace + ERRLOG decode.) As the real
+ * console it is never powered off, so the earlycon->ttyMSM1 handover is clean.
+ * VERIFIED on hardware 2026-07-28: kernel -> Sarala init -> /bin/sh, shell prompt
+ * on the jack, zero TZ abort.
+ *
+ * The rest of BLSP2 stays disabled: the BAM DMA engine (0x7584000) — its `bam`
+ * driver READS BAM registers at probe (qcom,controlled-remotely, so it does not
+ * power the block itself) and that read into the otherwise-gated BLSP2 block was
+ * the PNOC RD+DISC that reset us at execve — plus the two i2c buses whose oneplus
+ * client devices marlin lacks. blsp2_uart2 needs no BAM: it has no `dmas`, so
+ * msm_serial drives it in PIO.
  */
-&blsp2_uart2 { status = "disabled"; };
+&blsp2_uart2 { status = "okay"; };
 &blsp2_i2c1  { status = "disabled"; };
 &blsp2_i2c6  { status = "disabled"; };
 &blsp2_dma   { status = "disabled"; };
 
 /*
- * blsp1_uart2 is marlin's DEBUG CONSOLE (the 3.5mm jack), not oneplus's
- * Bluetooth UART. oneplus-common attaches a qca6174 `bluetooth` serdev child,
- * which makes the serial core register the port as a *serdev controller*
- * (serial0) instead of a plain tty — so ttyMSM0 gets no /sys/class/tty entry,
- * no /dev node, and open() returns ENXIO: the kernel console (printk) works but
- * userspace (PID 1, the shell) has no usable serial tty. Drop the serdev child
- * (and the BT-only rtscts/label) so the port registers as a normal tty ttyMSM0.
+ * blsp1_uart2 (ttyMSM0, 0x7570000) is NOT the jack — the jack is blsp2 (see
+ * above). It was mistaken for the console during early bring-up; these overrides
+ * are now vestigial but harmless, and are kept so the port is a plain, usable
+ * tty should we ever want it. oneplus-common attaches a qca6174 `bluetooth`
+ * serdev child, which makes the serial core register the port as a *serdev
+ * controller* instead of a plain tty (no /sys/class/tty entry, no /dev node,
+ * open() -> ENXIO). Drop the serdev child (and the BT-only rtscts/label) so it
+ * registers as a normal tty; drop the dmas so it runs in PIO. This node can be
+ * disabled entirely in a later cleanup.
  */
 &blsp1_uart2 {
 	/delete-property/ label;

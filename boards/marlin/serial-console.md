@@ -123,20 +123,24 @@ right).
 ## How this connects to the boot image
 
 Use **bare `earlycon`** in the cmdline (see [`boot-image.md`](boot-image.md)),
-*not* `earlycon=msm_serial_dm,0x7570000`. Mainline `msm_serial.c` registers only
+*not* `earlycon=msm_serial_dm,0x75b0000`. Mainline `msm_serial.c` registers only
 `OF_EARLYCON_DECLARE(msm_serial_dm, "qcom,msm-uartdm", …)` — matched via the DT
-`stdout-path` (`serial0` → `serial@7570000`), not by the named `earlycon=` form
-(there is no bare `EARLYCON_DECLARE`). Bare `earlycon` therefore drives this
-exact UART before any driver or regulator probes; with `oem uart enable` set and
-the cable attached, that is the first output to watch for after `fastboot boot`.
-(As of the [first-boot log](first-boot.md), the kernel still emits nothing —
-it faults *before* earlycon — so this is necessary but not yet sufficient.)
+`stdout-path` (`serial1` → `serial@75b0000`, blsp2), not by the named `earlycon=`
+form (there is no bare `EARLYCON_DECLARE`). Bare `earlycon` therefore drives this
+exact UART before any driver or regulator probes.
 
-**One nuance to watch at bring-up:** `oem uart enable` sets the bootloader-level
-mux that routes `blsp1_uart2` to the jack. Bootloader and early-kernel
-(earlycon) output is confirmed to reach it. If output stops once the mainline
-kernel takes over the pinmux, the kernel may be re-muxing those pins — a dts
-pinctrl detail to check, not a wiring fault.
+**Set the real console to this same UART: `console=ttyMSM1,115200n8`.** ttyMSM1 is
+`blsp2_uart2` (the jack). This is not optional — if the runtime console is any
+*other* UART, serial_core powers `blsp2_uart2` off as a non-console port and the
+still-live earlycon's status-register poll into the gated block triggers an
+`RPM:TZ ABORT` reset (see [`first-boot.md`](first-boot.md)). As the real console
+it is never powered off. **Confirmed 2026-07-28:** with
+`earlycon console=ttyMSM1,115200n8`, output reaches the jack through the full
+boot and lands on the Sarala `/bin/sh` prompt.
+
+**One nuance:** `oem uart enable` sets the bootloader-level mux that routes the
+debug UART (blsp2) to the jack. Bootloader, earlycon, and the runtime ttyMSM1
+console are all confirmed to reach it.
 
 ## Status of the port
 

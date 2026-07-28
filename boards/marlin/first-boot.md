@@ -793,15 +793,39 @@ falls back to stock only because Sarala doesn't mark the slot "successful"; the 
 retry counter also auto-reverts to stock after repeated aborted boots — a rollback
 safety net to disable later.)
 
+### DE-MASQUERADED — standalone marlin device tree (2026-07-28)
+
+Dropped `#include "msm8996-oneplus-common.dtsi"`. The dts now stands on
+`msm8996pro.dtsi` + the PMICs marlin has (`pm8994`/`pmi8994`), and carries only the
+boot-critical core: the PM8994 RPM rail map, the S11 APC SAW regulator, `vph_pwr`,
+aliases/`chosen`, the blsp2 console (pinctrl from the SoC dtsi), the watchdog, and the
+SoC trims (SMMUs/SMP2P/CPU-DVFS). Everything oneplus (panel/touch/camera/audio/PCIe/USB/
+UFS/modem/battery/bluetooth/board-i2c) is gone — those are disabled-by-default in
+msm8996.dtsi, so most of the old `status="disabled"` overrides went with them. 494→382
+lines, none pretending to be a OnePlus.
+
+**Lesson — one dropped line faulted it.** First cut also dropped oneplus's
+`&tlmm { gpio-reserved-ranges = <81 4>; }`. GPIOs 81-84 are owned by a secure subsystem
+and XPU-protected; without reserving them, gpiolib/pinctrl init touched them and the TLMM
+raised an **XPU_VIOLATION** at ~0.6 s (aboot: `XPU ERROR ... XPU id 64 (TLMM)` →
+`Fatal Error: XPU_VIOLATION` → `RPM:TZ ABORT!`). Restoring that one node fixed it. So
+`gpio-reserved-ranges` is boot-critical, not cosmetic.
+
+**VERIFIED on hardware 2026-07-28** (standalone dts, `earlycon console=ttyMSM1,115200n8
+clk_ignore_unused`): `XPU=0 TZ_ABORT=0 NOC=0`, `Run /init` → `sarala-init` → `/bin/sh` →
+`/ #`, persistent, typable (`echo $((7*8))` → `56`). `clk: Not disabling unused clocks`
+(clean — no stray WARN).
+
 ### Remaining next steps
 
-1. **Console cleanup:** consider disabling `blsp1_uart2` (unused, not the jack); add
-   `clk_ignore_unused` to the flashed cmdline to silence the `fd_ahb_clk`
-   clk_disable_unused WARN; optionally add the wdt bark/bite interrupts (GIC_SPI 28/29)
-   for pretimeout.
+1. **Console cleanup:** consider disabling `blsp1_uart2` (unused, not the jack);
+   optionally add the wdt bark/bite interrupts (GIC_SPI 28/29) for pretimeout.
 2. **Grow busybox applet set** in `mkinitramfs.sh` (e.g. `uname`, `mount`, `free`,
    `reboot`) so the stage-1 shell is more useful.
-3. **De-masquerade the device tree:** replace the cribbed `msm8996-oneplus-common.dtsi`
-   with a genuinely marlin-specific node set — the path to a real mainline marlin port.
+3. **Reconcile regulator voltages** against the marlin downstream dts (the PM8994 rail
+   map is carried over from the common msm8996 config; values want a marlin pass).
 4. **A/B durability:** mark the slot successful / handle the rollback counter so repeated
-   reboots keep booting Sarala instead of reverting to stock.
+   reboots keep booting Sarala instead of reverting to stock (a rollback flipped the
+   active slot to `a` during this session).
+5. **Re-flash** the standalone image to `boot_b` (and `fastboot --set-active=b`) to make
+   the de-masqueraded tree the installed one.

@@ -2,50 +2,44 @@
 /*
  * Google Pixel XL (marlin) — Qualcomm MSM8996 Pro.
  *
- * STAGE 1 bring-up. Built up from the Pro sibling's substrate rather than a
- * bare skeleton: a minimal skeleton (SoC dtsi + just the console UART) faults
- * the mainline kernel very early (NOC_ERROR / TrustZone abort, before any
- * console) — it is missing the regulators/PMIC/pinctrl a real board carries.
- * The oneplus msm8996 common dtsi supplies exactly that and is proven to boot
- * msm8996 to a console, so we reuse it here.
+ * STAGE 1 bring-up, now a STANDALONE marlin device tree: the oneplus-common
+ * masquerade has been removed. Earlier the board cribbed
+ * msm8996-oneplus-common.dtsi wholesale (a minimal SoC+console skeleton faulted
+ * before any console — it lacked the regulators/PMIC a real board carries). We
+ * now carry only what marlin actually needs, built on the Pro SoC dtsi:
  *
- * RESULT (verified on hardware 2026-07-28): the mainline kernel boots to
- * completion, runs Sarala `/init`, and spawns an interactive `/bin/sh` whose
- * prompt appears on the 3.5mm jack — the stage-1 shell (ttyMSM1 = blsp2_uart2,
- * 0x75b0000; boot with `console=ttyMSM1`). Got here by iterating past every NOC
- * abort from unpowered/oneplus-only peripherals: SMMUs, the BLSP2 i2c/BAM, GPU,
- * SMP2P IPC to the DSPs, the oneplus board peripherals
- * (display/camera/audio/PCIe/USB/UFS/modem), the oneplus BLSP1 i2c buses, CPU
- * DVFS (see the trims below), the blsp2 console abort (see the BLSP2 note), and
- * the APSS watchdog (see the watchdog node at the end). The shell is now
- * PERSISTENT and TYPABLE on the jack — verified by typing commands over the
- * serial line and seeing busybox execute them. `clk_ignore_unused` is
- * recommended (else clk_disable_unused WARNs on `fd_ahb_clk`, a CAMSS clock under
- * a powered-off domain — non-fatal). See first-boot.md.
+ *  - the PM8994/PMI8994 PMICs (marlin's PMICs — the standard MSM8996 pairing);
+ *  - the PM8994 RPM-managed rail map and the S11 APC SAW regulator. These rails
+ *    are SoC+PMIC-level (shared by every msm8996 PM8994 board, marlin included),
+ *    not board identity; voltages still want a pass against the marlin downstream
+ *    dts, but they boot;
+ *  - the 3.5mm-jack debug console (blsp2_uart2, pinctrl from the SoC dtsi);
+ *  - the APSS watchdog;
+ *  - the stage-1 SoC trims (SMMUs / DSP SMP2P / CPU DVFS).
  *
- * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
- * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
- * live console; a marlin-specific node set replaces it later.
+ * Everything oneplus-specific (panel, touch, camera, audio card, WiFi/PCIe, USB,
+ * UFS, modem PIL, the board i2c client devices, battery, bluetooth) is simply
+ * gone: those nodes are disabled-by-default in msm8996.dtsi and we no longer
+ * enable them, so the long list of status="disabled" overrides is unnecessary.
+ * marlin's own display/touch/etc. arrive in later stages.
  *
- * CONSOLE (resolved 2026-07-28; see the BLSP2 note below and first-boot.md):
- *  - The 3.5mm jack debug UART is blsp2_uart2 (0x75b0000) = ttyMSM1. It is the
- *    earlycon (msm_serial_dm0, via stdout-path = serial1) AND the runtime console
- *    + shell tty. Boot with `console=ttyMSM1` so it is the *real* console —
- *    otherwise serial_core powers it off as a non-console port and the still-live
- *    earlycon's status-register poll into the gated block triggers an
- *    "RPM:TZ ABORT" (the root cause of the old "blsp2 probe NOC-aborts"; see the
- *    BLSP2 note). As the real console it is never powered off.
- *  - blsp1_uart2 (0x7570000, ttyMSM0) is left enabled but is NOT the jack and is
- *    no longer the console; its output is invisible. It can be dropped later.
- *  Boot cmdline: `earlycon console=ttyMSM1,115200n8 clk_ignore_unused`
- *  (stdout-path = serial1 is inherited from oneplus-common). `keep_bootcon` is
- *  optional now (both earlycon and ttyMSM1 are the same UART); dropping it gives
- *  single, non-doubled output.
+ * RESULT (verified on hardware 2026-07-28): boots to completion, runs Sarala
+ * /init, and spawns an interactive /bin/sh whose prompt is live on the jack —
+ * persistent (watchdog petted) and typable, flashed to the boot partition.
+ *
+ * CONSOLE: blsp2_uart2 (0x75b0000) = ttyMSM1 = the 3.5mm jack. It MUST be the
+ * real console — boot with `console=ttyMSM1` — else serial_core powers it off as
+ * a non-console port and the earlycon's status-register poll into the gated
+ * block triggers an RPM:TZ ABORT (see first-boot.md).
+ * Boot cmdline: `earlycon console=ttyMSM1,115200n8 clk_ignore_unused`
+ * (stdout-path = serial1, set below).
  */
 /dts-v1/;
 
 #include "msm8996pro.dtsi"
-#include "msm8996-oneplus-common.dtsi"
+#include "pm8994.dtsi"
+#include "pmi8994.dtsi"
+#include <dt-bindings/gpio/gpio.h>
 
 / {
 	model = "Google Pixel XL";
@@ -55,149 +49,315 @@
 	/* aboot dtb-match IDs — confirmed from the aboot log (MSM8996 Pro v1.1). */
 	qcom,msm-id = <422 0x10001>, <423 0x10001>;
 	qcom,board-id = <0x80 0>;
+
+	aliases {
+		serial0 = &blsp1_uart2;
+		serial1 = &blsp2_uart2;
+	};
+
+	chosen {
+		stdout-path = "serial1:115200n8";
+	};
+
+	/* System (battery) rail — the input supply for the PMIC regulators. */
+	vph_pwr: vph-pwr-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "vph_pwr";
+		regulator-min-microvolt = <3700000>;
+		regulator-max-microvolt = <3700000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reserved-memory {
+		/* pstore/ramoops — survives across the /proc/consoles check. */
+		ramoops@ac000000 {
+			compatible = "ramoops";
+			reg = <0 0xac000000 0 0x200000>;
+			record-size = <0x20000>;
+			console-size = <0x100000>;
+			pmsg-size = <0x80000>;
+		};
+	};
 };
 
 /*
- * BLSP2: blsp2_uart2 @ 0x75b0000 is marlin's debug UART on the 3.5mm jack — the
- * bootloader's console and our earlycon (msm_serial_dm0, via stdout-path =
- * serial1 from oneplus-common). ENABLE it: it is the runtime console + shell tty
- * (ttyMSM1).
- *
- * It MUST be the kernel's *real* console — boot with `console=ttyMSM1`. If it is
- * only the earlycon while `console=` points at another UART, serial_core treats
- * blsp2_uart2 as a non-console port and powers it OFF at the end of
- * uart_configure_port (uart_change_pm UART_PM_STATE_OFF -> msm_power gates the
- * BLSP2 apps+AHB clocks). The earlycon, kept alive by keep_bootcon, then
- * poll-reads blsp2's status register into the now clock-gated block -> async
- * PNOC RD+DISC NOC error -> aboot "RPM:TZ ABORT" reset ~1 s later. (This — not a
- * missing clock/power — was the long-hunted blsp2 probe abort; the block is
- * fully accessible, the driver just pulled the clock out from under the still-
- * live earlycon. See first-boot.md for the trace + ERRLOG decode.) As the real
- * console it is never powered off, so the earlycon->ttyMSM1 handover is clean.
- * VERIFIED on hardware 2026-07-28: kernel -> Sarala init -> /bin/sh, shell prompt
- * on the jack, zero TZ abort.
- *
- * The rest of BLSP2 stays disabled: the BAM DMA engine (0x7584000) — its `bam`
- * driver READS BAM registers at probe (qcom,controlled-remotely, so it does not
- * power the block itself) and that read into the otherwise-gated BLSP2 block was
- * the PNOC RD+DISC that reset us at execve — plus the two i2c buses whose oneplus
- * client devices marlin lacks. blsp2_uart2 needs no BAM: it has no `dmas`, so
- * msm_serial drives it in PIO.
+ * PM8994 RPM-managed regulators — the standard msm8996 rail map (SoC+PMIC level,
+ * not board identity). Carried over from the common msm8996 config; voltages to
+ * be reconciled against the marlin downstream dts in a later pass.
  */
-&blsp2_uart2 { status = "okay"; };
-&blsp2_i2c1  { status = "disabled"; };
-&blsp2_i2c6  { status = "disabled"; };
-&blsp2_dma   { status = "disabled"; };
+&rpm_requests {
+	regulators {
+		compatible = "qcom,rpm-pm8994-regulators";
+
+		vreg_s3a_1p3: s3 {
+			regulator-name = "vreg_s3a_1p3";
+			regulator-min-microvolt = <1300000>;
+			regulator-max-microvolt = <1300000>;
+		};
+
+		vreg_s4a_1p8: s4 {
+			regulator-name = "vreg_s4a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-always-on;
+		};
+
+		vreg_s5a_2p15: s5 {
+			regulator-name = "vreg_s5a_2p15";
+			regulator-min-microvolt = <2150000>;
+			regulator-max-microvolt = <2150000>;
+		};
+
+		vreg_s7a_0p8: s7 {
+			regulator-name = "vreg_s7a_0p8";
+			regulator-min-microvolt = <800000>;
+			regulator-max-microvolt = <800000>;
+		};
+
+		vreg_l1a_1p0: l1 {
+			regulator-name = "vreg_l1a_1p0";
+			regulator-min-microvolt = <1000000>;
+			regulator-max-microvolt = <1000000>;
+		};
+
+		vreg_l2a_1p25: l2 {
+			regulator-name = "vreg_l2a_1p25";
+			regulator-min-microvolt = <1250000>;
+			regulator-max-microvolt = <1250000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l3a_1p1: l3 {
+			regulator-name = "vreg_l3a_1p1";
+			regulator-min-microvolt = <1100000>;
+			regulator-max-microvolt = <1100000>;
+		};
+
+		vreg_l4a_1p225: l4 {
+			regulator-name = "vreg_l4a_1p225";
+			regulator-min-microvolt = <1225000>;
+			regulator-max-microvolt = <1225000>;
+		};
+
+		vreg_l6a_1p2: l6 {
+			regulator-name = "vreg_l6a_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+		};
+
+		vreg_l7a_1p8: l7 {
+			regulator-name = "vreg_l7a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l9a_1p8: l9 {
+			regulator-name = "vreg_l9a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l10a_1p8: l10 {
+			regulator-name = "vreg_l10a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l11a_1p15: l11 {
+			regulator-name = "vreg_l11a_1p15";
+			regulator-min-microvolt = <1150000>;
+			regulator-max-microvolt = <1150000>;
+		};
+
+		vreg_l12a_1p8: l12 {
+			regulator-name = "vreg_l12a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l13a_2p95: l13 {
+			regulator-name = "vreg_l13a_2p95";
+			regulator-min-microvolt = <2950000>;
+			regulator-max-microvolt = <2950000>;
+		};
+
+		vreg_l16a_2p7: l16 {
+			regulator-name = "vreg_l16a_2p7";
+			regulator-min-microvolt = <2700000>;
+			regulator-max-microvolt = <2700000>;
+		};
+
+		vreg_l17a_2p6: l17 {
+			regulator-name = "vreg_l17a_2p6";
+			regulator-min-microvolt = <2600000>;
+			regulator-max-microvolt = <2600000>;
+		};
+
+		vreg_l18a_3p3: l18 {
+			regulator-name = "vreg_l18a_3p3";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		vreg_l19a_3p0: l19 {
+			regulator-name = "vreg_l19a_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+		};
+
+		vreg_l20a_2p95: l20 {
+			regulator-name = "vreg_l20a_2p95";
+			regulator-min-microvolt = <2950000>;
+			regulator-max-microvolt = <2950000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l21a_2p95: l21 {
+			regulator-name = "vreg_l21a_2p95";
+			regulator-min-microvolt = <2950000>;
+			regulator-max-microvolt = <2950000>;
+			regulator-allow-set-load;
+			regulator-system-load = <200000>;
+		};
+
+		vreg_l22a_3p0: l22 {
+			regulator-name = "vreg_l22a_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		vreg_l23a_2p8: l23 {
+			regulator-name = "vreg_l23a_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+
+		vreg_l24a_3p075: l24 {
+			regulator-name = "vreg_l24a_3p075";
+			regulator-min-microvolt = <3075000>;
+			regulator-max-microvolt = <3075000>;
+		};
+
+		vreg_l25a_1p2: l25 {
+			regulator-name = "vreg_l25a_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-allow-set-load;
+			regulator-always-on;
+		};
+
+		vreg_l27a_1p2: l27 {
+			regulator-name = "vreg_l27a_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+		};
+
+		vreg_l28a_0p925: l28 {
+			regulator-name = "vreg_l28a_0p925";
+			regulator-min-microvolt = <925000>;
+			regulator-max-microvolt = <925000>;
+			regulator-allow-set-load;
+		};
+
+		vreg_l29a_2p8: l29 {
+			regulator-name = "vreg_l29a_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+
+		vreg_l30a_1p8: l30 {
+			regulator-name = "vreg_l30a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_l32a_1p8: l32 {
+			regulator-name = "vreg_l32a_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		vreg_lvs2a: lvs2 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+	};
+};
+
 
 /*
- * blsp1_uart2 (ttyMSM0, 0x7570000) is NOT the jack — the jack is blsp2 (see
- * above). It was mistaken for the console during early bring-up; these overrides
- * are now vestigial but harmless, and are kept so the port is a plain, usable
- * tty should we ever want it. oneplus-common attaches a qca6174 `bluetooth`
- * serdev child, which makes the serial core register the port as a *serdev
- * controller* instead of a plain tty (no /sys/class/tty entry, no /dev node,
- * open() -> ENXIO). Drop the serdev child (and the BT-only rtscts/label) so it
- * registers as a normal tty; drop the dmas so it runs in PIO. This node can be
- * disabled entirely in a later cleanup.
+ * PM8994 SPMI (SAW) regulators. s11 is the APC0/APC1 SAW leader (Kryo supply);
+ * s9/s10 are its slaves. Always-on; boot depends on it.
  */
-&blsp1_uart2 {
-	/delete-property/ label;
-	/delete-property/ uart-has-rtscts;
+&pm8994_spmi_regulators {
+	qcom,saw-reg = <&saw3>;
 
-	/*
-	 * Use PIO, not BAM DMA, for the console tty. msm_serial routes tty TX/RX
-	 * through blsp1_dma (dmas = <&blsp1_dma 2 3>), but that DMA path produces
-	 * no physical output on marlin (a tty write succeeds and tcdrain returns,
-	 * yet nothing reaches the jack — while the console's polled writes do).
-	 * Dropping the dmas makes ttyMSM0 transmit in PIO, matching the console.
-	 * (delete-property must precede delete-node per dtc.)
-	 */
-	/delete-property/ dmas;
-	/delete-property/ dma-names;
+	s9 {
+		qcom,saw-slave;
+	};
 
-	/delete-node/ bluetooth;
+	s10 {
+		qcom,saw-slave;
+	};
+
+	s11 {
+		qcom,saw-leader;
+		regulator-min-microvolt = <1140000>;
+		regulator-max-microvolt = <1140000>;
+		regulator-max-step-microvolt = <150000>;
+		regulator-always-on;
+	};
 };
 
 /*
- * Multimedia (MMSS) and audio (LPASS) IOMMUs: register access NOC-aborts
- * because those power domains aren't up, and none are needed for a stage-1
- * serial boot. adreno_smmu (GPU) probes fine and is left enabled. VERIFIED:
- * disabling these gets the boot past all SMMUs (~2.94 s).
+ * Debug console on the 3.5mm jack. blsp2_uart2 = ttyMSM1; pinctrl states come
+ * from msm8996.dtsi. Must be the runtime console (console=ttyMSM1); see header.
+ */
+&blsp2_uart2 {
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&blsp2_uart2_2pins_default>;
+	pinctrl-1 = <&blsp2_uart2_2pins_sleep>;
+	status = "okay";
+};
+
+/*
+ * Reserve the secure GPIO range. GPIOs 81-84 on msm8996 are owned by a secure
+ * subsystem and XPU-protected; if gpiolib/pinctrl init touches them the TLMM
+ * raises an XPU_VIOLATION -> RPM:TZ ABORT at ~0.6 s (XPU id 64 = TLMM). This one
+ * line was in oneplus-common's &tlmm and is boot-critical — do not drop it.
+ */
+&tlmm {
+	gpio-reserved-ranges = <81 4>;
+};
+
+/*
+ * Stage-1 SoC trims. These MMSS/LPASS IOMMUs are status="okay" (or default-on)
+ * in msm8996.dtsi but their power domains are not up on a console-only boot, so
+ * register access NOC-aborts. adreno_smmu is disabled defensively (its only
+ * consumer, the GPU, is default-off, but it re-probes via deferred_probe).
  */
 &mdp_smmu      { status = "disabled"; };
 &venus_smmu    { status = "disabled"; };
 &vfe_smmu      { status = "disabled"; };
 &lpass_q6_smmu { status = "disabled"; };
-
-/*
- * GPU stack: adreno_smmu probes fine initially but NOC-aborts when re-probed
- * during deferred_probe (~13 s) as the GPU consumer pulls it in. Graphics is
- * unused for stage-1, so disable both.
- */
-&gpu         { status = "disabled"; };
-&adreno_smmu { status = "disabled"; };
+&adreno_smmu   { status = "disabled"; };
 
 /*
  * SMP2P IPC to the DSPs (ADSP/MPSS/SLPI). Those remotes are still running from
- * aboot and send SMP2P interrupts; our handler NOC-aborts (async — the crash
- * point moved with logging). We don't use the DSPs, so disable the channels.
- * (No top-level labels in the SoC dtsi, so reference by path.)
+ * aboot and raise SMP2P interrupts; our handler NOC-aborts (async). We don't use
+ * the DSPs. (No labels in the SoC dtsi, so reference by path.)
  */
 &{/smp2p-adsp} { status = "disabled"; };
 &{/smp2p-mpss} { status = "disabled"; };
 &{/smp2p-slpi} { status = "disabled"; };
 
 /*
- * STEP #2 — trim the oneplus board peripherals (2026-07-27).
- *
- * oneplus-common brings up its own panel, camera, audio card, WiFi/PCIe, USB,
- * UFS and modem, all wired to oneplus-specific GPIOs/regulators/remotes that
- * marlin does NOT share. None is needed for a stage-1 serial-console boot, and
- * none feeds the console path (blsp1_uart2 + its gcc clocks + the PM8994
- * rails), so disabling them is safe for the boot while shrinking the masquerade
- * toward a marlin-specific node set. This also clears candidate async-NOC
- * sources — especially mss_pil, which pokes the still-running MPSS modem the
- * same remote SMP2P already faulted us on.
- */
-&mdp           { status = "disabled"; };  /* display controller */
-&mdss          { status = "disabled"; };
-&mdss_dsi0     { status = "disabled"; };
-&mdss_dsi0_phy { status = "disabled"; };
-&camss         { status = "disabled"; };  /* camera */
-&sound         { status = "disabled"; };  /* audio card */
-&q6asmdai      { status = "disabled"; };
-&slim_msm      { status = "disabled"; };  /* SLIMbus (audio) */
-&pcie0         { status = "disabled"; };  /* WiFi/PCIe */
-&pcie_phy      { status = "disabled"; };
-&usb3          { status = "disabled"; };  /* USB */
-&hsusb_phy1    { status = "disabled"; };
-&hsusb_phy2    { status = "disabled"; };
-&ufshc         { status = "disabled"; };  /* UFS storage */
-&ufsphy        { status = "disabled"; };
-&mss_pil       { status = "disabled"; };  /* modem PIL — pokes MPSS remote */
-
-/*
- * oneplus BLSP1 i2c buses carrying oneplus-only client devices marlin lacks:
- *   blsp1_i2c3 (0x7577000) → tfa9890 audio amp
- *   blsp1_i2c6 (0x757a000) → bq27541 fuel gauge
- * Probing the bus brings up the QUP to reach those absent devices, which throws
- * a PNOC (peripheral NOC) abort → instant TZ reset right after ttyMSM0 comes up
- * (~2.38 s). This was the "residual async NOC" — captured at last via aboot's
- * NOC error dump (PNOC ERRLOG1 = 0x0a801204, a BLSP QUP route). marlin's own
- * i2c bus/device map replaces these later. (blsp2_i2c1's fusb301 is already
- * covered by the blsp2 block-disable above.)
- */
-&blsp1_i2c3    { status = "disabled"; };
-&blsp1_i2c6    { status = "disabled"; };
-
-/*
- * Stage-1: disable CPU DVFS. mainline qcom-cpufreq-nvmem does its first
- * clk_set_rate on the Kryo clock (&kryocc), which reprograms the APCS PLL/mux +
- * CBF and the vdd-apc CPR — that path NOC-aborts on marlin (instant TZ reset at
- * the first cpufreq setpoint ~2.0 s, right after ttyMSM0; aboot logs
- * NOC_ERROR). Dropping operating-points-v2 from the CPUs makes cpufreq fail to
- * build a table, so the cores simply stay at the boot frequency — fine for a
- * serial-console boot. Real DVFS (with CPR/vdd-apc modelled) is a later stage.
+ * Stage-1: disable CPU DVFS. qcom-cpufreq-nvmem's first clk_set_rate on the Kryo
+ * clock reprograms the APCS PLL/mux + CBF and the vdd-apc CPR — that path
+ * NOC-aborts on marlin. Dropping operating-points-v2 leaves the cores at the
+ * boot frequency. Real DVFS (with CPR/vdd-apc modelled) is a later stage.
  */
 &cpu0 { /delete-property/ operating-points-v2; };
 &cpu1 { /delete-property/ operating-points-v2; };
@@ -205,22 +365,12 @@
 &cpu3 { /delete-property/ operating-points-v2; };
 
 /*
- * APSS non-secure watchdog. aboot arms it before handing off; with no driver to
- * pet it, NON_SECURE_WDT bites ~15 s in and warm-resets us (aboot then falls
- * back to stock Android — which is why a RAM-booted shell did not persist).
- * qcom-wdt (CONFIG_QCOM_WDT + CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED, both set)
- * detects the already-running watchdog, takes it over and pings it via the
- * watchdog core.
- *
- * The node is absent from mainline msm8996.dtsi, so add it here on &soc
- * (#address-cells/#size-cells = 1). reg is the msm8996 APSS watchdog base
- * 0x09830000 — right beside apcs_glb (0x09820000) in the msm8996 APCS region,
- * per the downstream msm8996 `qcom,msm-watchdog` (wdt-base). NOT 0x17817000:
- * that is the msm8998/sdm845 layout and is unmapped on msm8996 — accessing it
- * hangs the CPU (RCU stall, no progress). Clocked by the 32 kHz sleep_clk;
- * binds via the "qcom,kpss-wdt" fallback. Bark/bite interrupts (GIC_SPI 28/29
- * downstream) are omitted for now — they are only used for pretimeout
- * notification; the ping-based watchdog needs no IRQ (platform_get_irq_optional).
+ * APSS non-secure watchdog. aboot arms it; qcom-wdt (with
+ * CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED) adopts and pings it, else NON_SECURE_WDT
+ * bites ~15 s in. reg is the msm8996 APSS wdt-base 0x09830000 (beside apcs_glb);
+ * NOT 0x17817000 (that is the msm8998/sdm845 layout — unmapped here, hangs the
+ * CPU). Absent from mainline msm8996.dtsi, so add it on &soc. Bark/bite
+ * interrupts omitted (pretimeout only). See first-boot.md.
  */
 &soc {
 	watchdog@9830000 {

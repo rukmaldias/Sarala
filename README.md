@@ -40,24 +40,30 @@ The kernel's driver ecosystem is the one component no individual can rewrite. Ev
 `qemu-system-aarch64 -M virt` and hands back an interactive shell;
 `/proc/1/comm` reports `init`. See [`docs/stage0-notes.md`](docs/stage0-notes.md).
 
-**Stage 1 — marlin bring-up, in progress.** Target: `fastboot boot` a Sarala
-image on the Pixel XL and get a shell over serial. Done so far, all off-device:
+**Stage 1 — marlin bring-up: interactive shell achieved, now installed on-device.**
+The mainline kernel boots on the Pixel XL to a Sarala `/bin/sh` prompt on the
+3.5mm-jack serial console — **persistent and typable**, and now **flashed to the
+boot partition** so it comes up standalone on every reboot (no `fastboot boot`).
+No mainline marlin port existed to start from — this is a first port. What got
+here:
 
 - Hardware mined from the downstream device tree — touchscreen, panel,
   regulators, UFS, serial ([`boards/marlin/hardware.md`](boards/marlin/hardware.md)).
-- A boot-and-console device-tree skeleton that compiles against the kernel
-  ([`boards/marlin/dts/`](boards/marlin/dts/)).
-- A `boot.img` packaged with marlin's verified boot geometry
+- A marlin device tree that boots mainline past every unpowered-peripheral NOC
+  abort ([`boards/marlin/dts/`](boards/marlin/dts/)).
+- A `boot.img` with marlin's verified-boot geometry
   ([`boards/marlin/boot-image.md`](boards/marlin/boot-image.md)).
-- Console access solved **and verified on hardware**: marlin's debug UART is on
-  the 3.5mm headphone jack, the bootloader accepts `fastboot oem uart enable`,
-  and a DIY 3.3V FTDI cable now reads the live kernel log at 115200
-  ([`boards/marlin/serial-console.md`](boards/marlin/serial-console.md)).
+- Console on the 3.5mm jack, verified with a DIY 3.3V FTDI cable
+  ([`boards/marlin/serial-console.md`](boards/marlin/serial-console.md)). The jack
+  UART is **blsp2_uart2** and must be the *real* console (`console=ttyMSM1`), else
+  an earlycon-vs-power-off race triggers an `RPM:TZ ABORT`.
+- The APSS watchdog (`watchdog@9830000`) so the boot-armed watchdog is petted and
+  the shell persists past ~15 s.
+- All verified on hardware, end to end (typed commands execute over serial). See
+  [`boards/marlin/first-boot.md`](boards/marlin/first-boot.md).
 
-The cable — the prior blocker to any on-device work — is built and confirmed.
-The next gate is the **first `fastboot boot` of a Sarala image on real marlin**,
-watching for the kernel's own `earlycon` output. No mainline marlin port existed
-to start from — this is a first port.
+Next: replace the oneplus device-tree masquerade with a genuinely marlin-specific
+node set, and grow userspace beyond the stage-1 shell.
 
 ## Layout
 

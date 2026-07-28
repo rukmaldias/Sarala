@@ -767,14 +767,41 @@ ttyMSM1              -W- (EC     )  242:1   <- ttyMSM1 = Enabled preferred Conso
 interrupts (GIC_SPI 28/29 downstream) are omitted — only needed for pretimeout, which we
 don't use.
 
+### FLASHED — standalone install (2026-07-28)
+
+Flashed the verified boot image (blsp2 console + watchdog + Sarala initramfs) to the
+boot partition and rebooted with **no `fastboot boot`** — Sarala comes up on its own.
+
+- marlin is **A/B**; active slot was **b**, so `fastboot flash boot` wrote **boot_b**
+  (`/dev/block/sda19..20`; boot_a keeps stock Android as the fallback). Bootloader is
+  unlocked (`unlocked: yes`, verifiedbootstate `orange`), so the unsigned image is
+  accepted. No root, so no dd-backup of stock — recovery is `fastboot --set-active=a`
+  or Google's marlin factory image; fastboot is always reachable by key-combo.
+- **aboot appends `rootwait skip_initramfs init=/init`** for a normal (non-recovery)
+  boot — but our **mainline** kernel has no `skip_initramfs` patch, so it ignores the
+  flag, loads our initramfs, and runs `/init`. This is why a flashed mainline boot
+  "just works" where an Android kernel would skip the ramdisk.
+
+**VERIFIED on hardware:** `fastboot reboot` (a real reboot) → our 6.16 kernel → `Run
+/init` → `sarala-init` → `/bin/sh` → `/ #`, ttyMSM1 console, no stock-Android fallback,
+no reset. Live shell after: `cat /proc/uptime` → `65.13` (booted from flash), typed
+commands execute. **Every reboot/power-cycle now boots Sarala on slot b.**
+
+To get from a running Sarala shell back to fastboot (Sarala has no `reboot` symlink):
+`/bin/busybox reboot -f` over serial → stock Android → `adb reboot bootloader`. (Reboot
+falls back to stock only because Sarala doesn't mark the slot "successful"; the A/B
+retry counter also auto-reverts to stock after repeated aborted boots — a rollback
+safety net to disable later.)
+
 ### Remaining next steps
 
-1. **Console cleanup:** drop `keep_bootcon` (single, non-doubled output — already done in
-   the verified cmdline `earlycon console=ttyMSM1,115200n8`); consider disabling
-   `blsp1_uart2` (unused, not the jack). Optionally add the wdt bark/bite interrupts for
-   pretimeout.
-2. **Grow busybox applet set** in `mkinitramfs.sh` (e.g. `uname`, `mount`, `free`) so the
-   stage-1 shell is more useful.
-3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a flashed boot.
-4. **Flash to boot partition** for a standalone boot (no `fastboot boot`), so a reset
-   re-boots Sarala instead of falling back to stock Android.
+1. **Console cleanup:** consider disabling `blsp1_uart2` (unused, not the jack); add
+   `clk_ignore_unused` to the flashed cmdline to silence the `fd_ahb_clk`
+   clk_disable_unused WARN; optionally add the wdt bark/bite interrupts (GIC_SPI 28/29)
+   for pretimeout.
+2. **Grow busybox applet set** in `mkinitramfs.sh` (e.g. `uname`, `mount`, `free`,
+   `reboot`) so the stage-1 shell is more useful.
+3. **De-masquerade the device tree:** replace the cribbed `msm8996-oneplus-common.dtsi`
+   with a genuinely marlin-specific node set — the path to a real mainline marlin port.
+4. **A/B durability:** mark the slot successful / handle the rollback counter so repeated
+   reboots keep booting Sarala instead of reverting to stock.

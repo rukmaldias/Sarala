@@ -1,8 +1,14 @@
 # marlin — boot image geometry
 
 Everything `mkbootimg` needs to package a `boot.img` that marlin's bootloader
-(aboot) will accept. Nothing here is flashed: the image is booted transiently
-with `fastboot boot`, and Android stays intact on the other slot.
+(aboot) will accept. Bring-up iterates transiently with `fastboot boot`; once an
+image is proven, it is **flashed to the boot partition** (`fastboot flash boot`)
+so Sarala boots standalone on every reboot. marlin is A/B — the flash targets the
+active slot (was `b`) and the other slot keeps stock Android as a fallback
+(`fastboot --set-active=a`). On a flashed boot, aboot appends
+`skip_initramfs init=/init`; our mainline kernel ignores `skip_initramfs` (an
+Android-only patch), so our initramfs still runs. See
+[`first-boot.md`](first-boot.md).
 
 ## Source
 

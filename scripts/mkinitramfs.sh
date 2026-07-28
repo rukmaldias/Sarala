@@ -23,6 +23,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"/bin "$STAGE"/sbin "$STAGE"/proc "$STAGE"/sys "$STAGE"/dev "$STAGE"/run "$STAGE"/root
 
 install -m 0755 "$ROOT/target/$TARGET/release/init" "$STAGE/init"
+install -m 0755 "$ROOT/target/$TARGET/release/bootctrl" "$STAGE/sbin/bootctrl"
 install -m 0755 "$BUSYBOX" "$STAGE/bin/busybox"
 
 # Busybox dispatches on argv[0], so every applet is a link to the one binary.

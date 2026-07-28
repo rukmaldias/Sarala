@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "bootctrl"
+version = "0.0.1"
+
+[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"

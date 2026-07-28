@@ -837,16 +837,41 @@ kernel logged `GPT:partition_entry_array_crc32 ... don't match` and recovered vi
 backup GPT — marlin's primary-GPT entry-array CRC is nonstandard, so the bootctrl writer
 must recompute CRCs carefully and update both primary and backup.
 
+### BOOTCTRL — A/B slot control tool (2026-07-28)
+
+Built `bootctrl` (new workspace crate, in the initramfs at `/sbin/bootctrl`, no deps —
+it writes the boot device's partition table so every line is auditable): parses the GPT,
+decodes/sets the Qualcomm A/B attribute bits (priority 48-49, active 50, retry 51-53,
+successful 54, unbootable 55) in the `boot_{a,b}` entries. `dump` is read-only; `mark
+<disk> <slot> [--commit]` marks a slot good (active+successful+priority3+7 retries,
+clears unbootable) AND clears the sibling's active bit so the bootloader unambiguously
+picks it (sibling kept bootable as a fallback), recomputing the entry-array + header
+CRC32 for **both** primary and backup GPT. Sarala init now runs
+`bootctrl mark /dev/sda auto --commit` on every boot (best-effort), so the booted slot is
+always re-asserted good — permanent stickiness with no Android bootctrl HAL.
+
+**Verified read paths on hardware (2026-07-28):**
+- `dump`: disk=/dev/sda, block size 4096, GPT 36×128; primary + backup headers each
+  self-consistent (header_crc + entries_crc OK) — the kernel's earlier "crc don't match"
+  was primary-vs-backup differing in some non-boot partition, not corruption.
+- Current A/B state (confirms the rollback): `boot_a` (entry 18) priority3/active/retry2/
+  **successful**; `boot_b` (entry 19) priority3/inactive/retry4/**unbootable** — i.e. the
+  bootloader had already demoted our Sarala slot.
+- `mark boot_b` dry-run: computes `0x00a3… -> 0x007f…` (active1 retry7 successful1
+  unbootable0) correctly.
+
+**Still to verify:** the actual `--commit` write on hardware (CRC recompute + block-aligned
+write-back of both GPTs), then flash the init-wired image and confirm boot_b sticks across
+reboots. Was mid-rebuild when the build VM's sshd wedged (the known banner-timeout
+flakiness) — needs a VM restart to finish the initramfs build.
+
 ### Remaining next steps
 
-1. **Bootctrl tool (the A/B stickiness fix):** a small tool in the initramfs that opens
-   `/dev/sda`, finds `boot_b` in the GPT, sets its attribute bits (successful=1, active,
-   priority=3, unbootable=0, max retries), recomputes the entry-array + header CRC32s, and
-   writes back **both** primary and backup GPT. Then have Sarala init run it on boot so the
-   active slot is always marked good — no more rollback to stock. (The one delicate write
-   on the boot device; test read-only first.)
-2. **Re-flash** the current image (de-masq + watchdog + UFS) to `boot_b` so the installed
-   tree matches the repo.
+1. **Verify the bootctrl `--commit` write** on hardware (RAM boot, `mark boot_b --commit`,
+   re-`dump` to confirm), then flash the init-wired image to `boot_b` and confirm it boots
+   Sarala and sticks across reboots.
+2. **Re-flash** the current image (de-masq + watchdog + UFS + bootctrl) to `boot_b` so the
+   installed tree matches the repo.
 3. **Console cleanup:** consider disabling `blsp1_uart2`; optionally add wdt bark/bite
    interrupts (GIC_SPI 28/29) for pretimeout.
 4. **Grow busybox applet set** (`uname`, `mount`, `free`, `reboot`, `dd`, `od`).

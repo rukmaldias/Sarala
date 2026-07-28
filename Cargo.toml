@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["init"]
+members = ["init", "bootctrl"]
 
 [workspace.package]
 version = "0.0.1"

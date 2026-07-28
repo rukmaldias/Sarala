@@ -35,6 +35,8 @@ fn main() {
 
     log::info(&format!("sarala-init {}", env!("CARGO_PKG_VERSION")));
 
+    mark_boot_slot();
+
     // Must precede the first fork, so no child exit races the main loop.
     let sigset = match signal::block() {
         Ok(set) => set,
@@ -76,6 +78,21 @@ fn main() {
             }
             other => log::warn(&format!("unexpected signal {other}")),
         }
+    }
+}
+
+/// Mark the booted A/B slot good so the bootloader stops rolling back to the
+/// stock slot (Sarala has no Android bootctrl HAL to do it). Best-effort: any
+/// failure — no UFS, no `slot_suffix`, a transient `fastboot boot` — must never
+/// stop the boot, so the result is only logged.
+fn mark_boot_slot() {
+    match std::process::Command::new("/sbin/bootctrl")
+        .args(["mark", "/dev/sda", "auto", "--commit"])
+        .status()
+    {
+        Ok(s) if s.success() => log::info("boot slot marked good"),
+        Ok(s) => log::warn(&format!("bootctrl exited abnormally: {s}")),
+        Err(e) => log::warn(&format!("bootctrl not run: {e}")),
     }
 }
 

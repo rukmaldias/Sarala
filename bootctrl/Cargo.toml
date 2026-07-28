@@ -1,0 +1,13 @@
+[package]
+name = "bootctrl"
+description = "Sarala A/B boot-slot control (Qualcomm GPT attributes)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bootctrl"
+path = "src/main.rs"
+
+# No dependencies: this writes the boot device's partition table, so every line
+# must be auditable. CRC32 and GPT parsing are implemented here directly.

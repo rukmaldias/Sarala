@@ -16,11 +16,12 @@
  * abort from unpowered/oneplus-only peripherals: SMMUs, the BLSP2 i2c/BAM, GPU,
  * SMP2P IPC to the DSPs, the oneplus board peripherals
  * (display/camera/audio/PCIe/USB/UFS/modem), the oneplus BLSP1 i2c buses, CPU
- * DVFS (see the trims below), and finally the blsp2 console abort (see the BLSP2
- * note). Boot cmdline needs `clk_ignore_unused` (else clk_disable_unused WARNs on
- * `fd_ahb_clk`, a CAMSS clock under a powered-off domain). REMAINING: a
- * non-secure watchdog resets ~15 s in (needs the apps-wdt node so qcom-wdt pets
- * it) — until then the shell is not persistent. See first-boot.md.
+ * DVFS (see the trims below), the blsp2 console abort (see the BLSP2 note), and
+ * the APSS watchdog (see the watchdog node at the end). The shell is now
+ * PERSISTENT and TYPABLE on the jack — verified by typing commands over the
+ * serial line and seeing busybox execute them. `clk_ignore_unused` is
+ * recommended (else clk_disable_unused WARNs on `fd_ahb_clk`, a CAMSS clock under
+ * a powered-off domain — non-fatal). See first-boot.md.
  *
  * TEMPORARY: cribbing msm8996-oneplus-common.dtsi makes marlin masquerade as a
  * oneplus board (its regulators/panel/touch/sound). Stage-1 stepping stone to a
@@ -202,3 +203,30 @@
 &cpu1 { /delete-property/ operating-points-v2; };
 &cpu2 { /delete-property/ operating-points-v2; };
 &cpu3 { /delete-property/ operating-points-v2; };
+
+/*
+ * APSS non-secure watchdog. aboot arms it before handing off; with no driver to
+ * pet it, NON_SECURE_WDT bites ~15 s in and warm-resets us (aboot then falls
+ * back to stock Android — which is why a RAM-booted shell did not persist).
+ * qcom-wdt (CONFIG_QCOM_WDT + CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED, both set)
+ * detects the already-running watchdog, takes it over and pings it via the
+ * watchdog core.
+ *
+ * The node is absent from mainline msm8996.dtsi, so add it here on &soc
+ * (#address-cells/#size-cells = 1). reg is the msm8996 APSS watchdog base
+ * 0x09830000 — right beside apcs_glb (0x09820000) in the msm8996 APCS region,
+ * per the downstream msm8996 `qcom,msm-watchdog` (wdt-base). NOT 0x17817000:
+ * that is the msm8998/sdm845 layout and is unmapped on msm8996 — accessing it
+ * hangs the CPU (RCU stall, no progress). Clocked by the 32 kHz sleep_clk;
+ * binds via the "qcom,kpss-wdt" fallback. Bark/bite interrupts (GIC_SPI 28/29
+ * downstream) are omitted for now — they are only used for pretimeout
+ * notification; the ping-based watchdog needs no IRQ (platform_get_irq_optional).
+ */
+&soc {
+	watchdog@9830000 {
+		compatible = "qcom,apss-wdt-msm8996", "qcom,kpss-wdt";
+		reg = <0x09830000 0x1000>;
+		clocks = <&sleep_clk>;
+		timeout-sec = <30>;
+	};
+};

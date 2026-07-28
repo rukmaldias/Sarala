@@ -727,15 +727,54 @@ console [ttyMSM1] enabled ... Freeing unused ... Run /init
 jack.** (With `keep_bootcon` the output doubles — earlycon + ttyMSM1 on the same UART;
 drop `keep_bootcon` for single output.)
 
+### WATCHDOG — persistent, typable shell (2026-07-28)
+
+The ~15 s reset was the **APSS non-secure watchdog** the bootloader arms and we never
+pet. Mainline `msm8996.dtsi` has no watchdog node, so `qcom-wdt` never bound. Added the
+node on `&soc`; `CONFIG_QCOM_WDT` + `CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED` then let the
+driver adopt the running watchdog and ping it (`qcom_wdt_is_running` → `qcom_wdt_start`
++ `WDOG_HW_RUNNING`).
+
+The **register address was the whole game.** First try used `0x17817000` (the
+msm8998/sdm845 APSS layout) — that region is **unmapped on msm8996**, so the probe's
+MMIO access **hung CPU0** (`rcu_preempt detected stalls`, no progress, bite at ~25 s).
+The authoritative downstream msm8996 `qcom,msm-watchdog` is at **`0x09830000`** (beside
+`apcs_glb` @ 0x09820000 in the msm8996 APCS region). With the correct address:
+
+```
+watchdog@9830000 {
+    compatible = "qcom,apss-wdt-msm8996", "qcom,kpss-wdt";
+    reg = <0x09830000 0x1000>;
+    clocks = <&sleep_clk>;          /* 32 kHz */
+    timeout-sec = <30>;
+};
+```
+
+**VERIFIED on hardware 2026-07-28:** no reset for the full 45 s capture (`NON_SECURE_WDT
+= 0`, `RCU stall = 0`); the shell **persists**. Then, typing into the live shell over
+the jack:
+
+```
+/ # echo SARALA_TYPING_OK=$((6*7))
+SARALA_TYPING_OK=42                     <- busybox evaluated it: RX + exec both work
+/ # uname -srm
+/bin/sh: uname: not found               <- real busybox error (applet not linked)
+/ # cat /proc/consoles
+ttyMSM1              -W- (EC     )  242:1   <- ttyMSM1 = Enabled preferred Console
+```
+
+**Stage 1's interactive, persistent, typable shell is live on the 3.5mm jack.** Bark/bite
+interrupts (GIC_SPI 28/29 downstream) are omitted — only needed for pretimeout, which we
+don't use.
+
 ### Remaining next steps
 
-1. **Add the msm8996 apps-watchdog node** so `qcom-wdt` claims/pets it (config flags
-   `CONFIG_QCOM_WDT`/`WATCHDOG_HANDLE_BOOT_ENABLED` already set) — a **non-secure
-   watchdog resets ~15 s in**, so the shell is not yet persistent (the RAM boot resets
-   and aboot falls back to stock Android). This is the blocker for a lasting shell.
-2. **Prove typability** on the persistent shell (send keystrokes, expect echo/exec).
-   The tty is a real console+tty so RX should work once the shell survives; today the
-   ~15 s reset makes an interactive test race the watchdog.
-3. **Clean up the console:** drop `keep_bootcon` (single output); consider disabling
-   `blsp1_uart2` (unused, not the jack).
-4. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a flashed boot.
+1. **Console cleanup:** drop `keep_bootcon` (single, non-doubled output — already done in
+   the verified cmdline `earlycon console=ttyMSM1,115200n8`); consider disabling
+   `blsp1_uart2` (unused, not the jack). Optionally add the wdt bark/bite interrupts for
+   pretimeout.
+2. **Grow busybox applet set** in `mkinitramfs.sh` (e.g. `uname`, `mount`, `free`) so the
+   stage-1 shell is more useful.
+3. **Trim oneplus-specifics further**; **(deferred) `skip_initramfs`** on a flashed boot.
+4. **Flash to boot partition** for a standalone boot (no `fastboot boot`), so a reset
+   re-boots Sarala instead of falling back to stock Android.
